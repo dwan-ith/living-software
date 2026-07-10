@@ -74,6 +74,10 @@ export default function App() {
         setAnalyzing(false);
         if (!data.analysis.shouldIntervene) addEvent('No grounded intervention found.');
       }
+      if (data.type === 'analysis_skipped') {
+        setAnalyzing(false);
+        addEvent(data.reason, 'warning');
+      }
       if (data.type === 'intervention') {
         setAnalyzing(false);
         setIntervention(data.intervention);
