@@ -1,0 +1,47 @@
+﻿node : file:///C:/Users/aace
+r/Documents/Living-Software/
+backend/node_modules/@google
+/genai/dist/node/index.mjs:2
+4983
+At line:1 char:1
++ node server.js 2>&1 | 
+Out-File -Encoding utf8 
+error_utf8.log
++ ~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          
+    : NotSpecified: (file:  
+  ///C:/User...index.mjs:   
+ 24983:String) [], Remot    
+eException
+    + FullyQualifiedErrorId 
+    : NativeCommandError
+ 
+        if 
+((options.project || 
+options.location) && 
+options.apiKey) {
+                     ^
+
+TypeError: Cannot read 
+properties of undefined 
+(reading 'project')
+    at new GoogleGenAI (file
+:///C:/Users/aacer/Documents
+/Living-Software/backend/nod
+e_modules/@google/genai/dist
+/node/index.mjs:24983:22)
+    at file:///C:/Users/aace
+r/Documents/Living-Software/
+backend/server.js:13:12
+    at ModuleJob.run (node:i
+nternal/modules/esm/module_j
+ob:413:25)
+    at async onImport.traceP
+romise.__proto__ (node:inter
+nal/modules/esm/loader:654:2
+6)
+    at async asyncRunEntryPo
+intWithESMLoader (node:inter
+nal/modules/run_main:101:5)
+
+Node.js v25.2.0
