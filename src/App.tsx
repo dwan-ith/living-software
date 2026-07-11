@@ -280,6 +280,13 @@ export default function App() {
       mediaRecorder.start();
       setListening(true);
       log('Listening via Gemini API...', 'active');
+      // Auto-stop after 8 seconds to prevent runaway recording
+      setTimeout(() => {
+        if (mediaRecorder.state === 'recording') {
+          mediaRecorder.stop();
+          setListening(false);
+        }
+      }, 8000);
     } catch {
       log('Microphone access denied or error.', 'warning');
       setListening(false);
@@ -387,7 +394,7 @@ export default function App() {
 
         <div style={{ padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
           <button className={`nav-item ${page === 'issues' ? 'active' : ''}`} style={{ margin: 0, padding: '8px' }} onClick={() => setPage('issues')}>
-            <span className="nav-icon">!'</span>
+            <span className="nav-icon">I</span>
             <div><strong>Issues history</strong><small>{issueHistory.length} pushbacks</small></div>
           </button>
           <button className={`nav-item ${page === 'logs' ? 'active' : ''}`} style={{ margin: 0, padding: '8px' }} onClick={() => setPage('logs')}>
@@ -410,7 +417,7 @@ export default function App() {
         {page === 'dependencies' && <DependencyPage items={dependencies} busy={busy} analysis={analysis} onRefresh={refreshCurrent} onAnalyze={(file) => askGemini(`Dependency risk object:\n${JSON.stringify(file)}`, 'You are the dependency graph agent. Describe likely imports, downstream documents, and a safe deletion protocol from the available evidence.')} />}
         {page === 'clipboard' && <ClipboardPage clipboard={clipboard} busy={busy} analysis={analysis} onRead={readClipboardNow} onUnderstand={() => clipboard && askGemini(`Clipboard content:\n${clipboard.text}`, 'Infer immediate user intent and offer paste transformations such as citation, Markdown, BibTeX, LaTeX figure, or plain text. Do not retain secrets.')} />}
         {page === 'notifications' && <NotificationsPage items={notifications} busy={busy} analysis={analysis} onCluster={() => askGemini(`Notifications:\n${notifications.map((item) => `${item.source} | ${item.project} | ${item.text}`).join('\n')}`, 'Cluster these notifications by project, summarize what matters, and suggest one next action.')} />}
-        {page === 'issues' && <IssuesPage items={issueHistory} />}
+        {page === 'issues' && <IssuesPage items={issueHistory} onInvestigate={() => setPage('screen')} />}
         {page === 'logs' && <LogsPage items={logs} />}
       </section>
 
@@ -424,7 +431,7 @@ export default function App() {
               <h2>{issue.title}</h2>
               {issue.brokenFuture?.imageBase64 && (
                 <div className="vision-demo">
-
+                  <small>Screenshot-grounded · {issue.brokenFuture.source || 'nano-banana'} · click to enlarge</small>
                   <img
                     style={{ cursor: 'zoom-in' }}
                     src={issue.brokenFuture.mimeType === 'image/svg+xml'
@@ -497,8 +504,8 @@ function NotificationsPage({ items, busy, analysis, onCluster }: { items: Notifi
   return <div className="surface data-surface"><div className="surface-heading"><div><span>Living Notifications</span><h2>Context, not interruption</h2><p>Local inbox items grouped by project instead of application.</p></div><button className="primary" onClick={onCluster} disabled={busy || !items.length}>Ask Gemini to merge</button></div><div className="notification-groups">{Object.entries(groups).map(([project, entries]) => <section className="notification-group" key={project}><header><strong>{project}</strong><span>{entries.length} related</span></header>{entries.map((item) => <div className="notification-row" key={item.id}><span>{item.source}</span><p>{item.text}</p><time>{time(item.createdAt)}</time></div>)}</section>)}</div>{analysis && <div className="ai-result"><span>Merged briefing</span><p>{analysis}</p></div>}</div>;
 }
 
-function IssuesPage({ items }: { items: Intervention[] }) {
-  return <div className="surface data-surface"><div className="surface-heading"><div><span>Intervention History</span><h2>Pushbacks & Issues</h2><p>Past interruptions caused by visual breakdowns.</p></div></div><div className="file-list">{items.length === 0 ? <div className="empty-data"><strong>No issues detected... yet.</strong></div> : items.map(issue => <article className={`file-row risk-${issue.severity === 'critical' ? 'high' : 'low'}`} key={issue.id}><span className="file-kind">{issue.severity.slice(0, 1).toUpperCase()}</span><div style={{ flex: 1 }}><strong>{issue.title}</strong><small>{issue.application} • {issue.severity}</small><p className="row-preview">{issue.reason}</p></div></article>)}</div></div>;
+function IssuesPage({ items, onInvestigate }: { items: Intervention[]; onInvestigate: () => void }) {
+  return <div className="surface data-surface"><div className="surface-heading"><div><span>Intervention History</span><h2>Pushbacks & Issues</h2><p>Past interruptions caused by visual breakdowns. Click Investigate to view live screen.</p></div></div><div className="file-list">{items.length === 0 ? <div className="empty-data"><strong>No issues detected yet.</strong><p>The observer runs continuously. Issues appear here when the screen analysis returns grounded evidence of a problem.</p></div> : items.map(issue => <article className={`file-row risk-${issue.severity === 'critical' ? 'high' : (issue.severity === 'warning' ? 'high' : 'low')}`} key={issue.id}>{issue.brokenFuture?.imageBase64 && <img style={{ width: '44px', height: '44px', objectFit: 'cover', borderRadius: '3px', flexShrink: 0 }} src={issue.brokenFuture.mimeType === 'image/svg+xml' ? `data:image/svg+xml;base64,${issue.brokenFuture.imageBase64}` : `data:${issue.brokenFuture.mimeType};base64,${issue.brokenFuture.imageBase64}`} alt="" />}<span className="file-kind">{issue.severity.slice(0, 1).toUpperCase()}</span><div style={{ flex: 1 }}><strong>{issue.title}</strong><small>{issue.application} • {issue.severity}</small><p className="row-preview">{issue.reason}</p></div><button onClick={onInvestigate}>View</button></article>)}</div></div>;
 }
 
 function LogsPage({ items }: { items: LogItem[] }) {

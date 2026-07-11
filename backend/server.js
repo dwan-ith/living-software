@@ -473,8 +473,10 @@ app.post('/api/interactions/ask', async (req, res) => {
         const response = await ai.models.generateContent({
             model: GEMINI_MODEL || 'gemini-3.5-flash',
             contents: [{ role: 'user', parts }],
-            generationConfig: { temperature: 0.2 },
-            systemInstruction: sysInstruction
+            config: {
+                temperature: 0.2,
+                systemInstruction: sysInstruction
+            }
         });
 
         const outputText = response.text
@@ -731,8 +733,10 @@ app.post('/api/local-evolve', async (req, res) => {
             const response = await ai.models.generateContent({
                 model: GEMINI_MODEL || 'gemini-3.5-flash',
                 contents: [{ role: 'user', parts: [{ text: evolvePrompt(organisms, events, preferredAction) }] }],
-                generationConfig: { temperature: 0.3 },
-                systemInstruction: 'Return only valid JSON for the ecosystem decision schema. No markdown.'
+                config: {
+                    temperature: 0.3,
+                    systemInstruction: 'Return only valid JSON for the ecosystem decision schema. No markdown.'
+                }
             });
             const outputText = response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || '';
             const parsed = extractJsonObject(outputText);
@@ -775,7 +779,7 @@ app.post('/api/dream/image', async (req, res) => {
                 const response = await ai.models.generateContent({
                     model: GEMINI_IMAGE_MODEL || 'gemini-2.0-flash-preview-image-generation',
                     contents: [{ role: 'user', parts: [{ text: visualPrompt }] }],
-                    generationConfig: { responseModalities: ['TEXT', 'IMAGE'] }
+                    config: { responseModalities: ['TEXT', 'IMAGE'] }
                 });
                 for (const part of response.candidates?.[0]?.content?.parts || []) {
                     if (part.inlineData?.data) {
@@ -827,8 +831,10 @@ async function handleUserInterrupt(payload) {
                             : `User interrupt: ${text}`
                     }]
                 }],
-                generationConfig: { temperature: 0.4 },
-                systemInstruction: 'Acknowledge the interrupt in one short sentence, then name a single new living software concept title derived from it. Format: ACK: ... | CONCEPT: ...'
+                config: {
+                    temperature: 0.4,
+                    systemInstruction: 'Acknowledge the interrupt in one short sentence, then name a single new living software concept title derived from it. Format: ACK: ... | CONCEPT: ...'
+                }
             });
             const output = response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || '';
             const conceptMatch = output.match(/CONCEPT:\s*(.+)$/im);
