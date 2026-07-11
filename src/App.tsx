@@ -95,7 +95,7 @@ export default function App() {
     let reconnect: number | undefined;
     let disposed = false;
     fetch(apiUrl('/api/observer/status')).then((r) => r.json()).then(setObserver).catch(() => log('Observer backend is offline.', 'warning'));
-    fetch(apiUrl('/api/companion/status')).then((r) => r.json()).then(setCompanion).catch(() => {});
+    fetch(apiUrl('/api/companion/status')).then((r) => r.json()).then(setCompanion).catch(() => { });
 
     const connect = () => {
       const socket = new WebSocket(wsUrl('/observer-ws'));
@@ -244,10 +244,6 @@ export default function App() {
 
   const pages: Array<{ id: Page; label: string; note: string; glyph: string }> = [
     { id: 'screen', label: 'Screen', note: 'Whole-desktop perception', glyph: 'S' },
-    { id: 'system', label: 'System', note: 'Unified world model', glyph: 'M' },
-    { id: 'rigor', label: 'Rigor', note: 'Agent readiness', glyph: 'Q' },
-    { id: 'memory', label: 'Memory', note: 'Recall and episodes', glyph: 'E' },
-    { id: 'slides', label: 'Slides', note: 'Deck coherence', glyph: 'P' },
     { id: 'notes', label: 'Notes', note: 'Concept linking', glyph: 'N' },
     { id: 'gallery', label: 'Gallery', note: 'Media meaning', glyph: 'G' },
     { id: 'files', label: 'Files', note: 'Reference risk', glyph: 'F' },
@@ -259,7 +255,7 @@ export default function App() {
 
   return <main className="shell">
     <header className="topbar glass">
-      <div className="identity"><span className={`pulse ${observer.running ? 'live' : ''}`} /><div><strong>Living Software</strong><small>Persistent computer layer</small></div></div>
+      <div className="identity"><span className={`pulse ${observer.running ? 'live' : ''}`} /><div><strong>Persistent Computer</strong><small>Persistent computer layer</small></div></div>
       <div className="top-actions">
         <span className={`model-state ${observer.model.connected ? 'ready' : ''}`}>{modelLabel}</span>
         <button className="icon-button" title={voice ? 'Mute voice' : 'Enable voice'} onClick={() => setVoice((value) => !value)}>{voice ? 'Voice on' : 'Voice off'}</button>
@@ -277,10 +273,6 @@ export default function App() {
 
       <section className="stage">
         {page === 'screen' && <ScreenPage frame={frame} observer={observer} busy={busy} onAnalyze={() => observerCommand('analyze')} />}
-        {page === 'system' && <SystemPage system={system} frame={frame} busy={busy} onRefresh={refreshCurrent} onSynthesize={() => askGemini(`Build a single world model from these system surfaces:\n${JSON.stringify(system?.surfaces || [])}\nLast screen timestamp: ${observer.lastCaptureAt}`, 'You are the system-understanding agent. Explain what the user is doing across the whole computer, what is missing, and the next reversible action.')} />}
-        {page === 'rigor' && <RigorPage rigor={rigor} localModel={localModel} busy={busy} onRefresh={refreshCurrent} onTestLocal={testLocalModel} />}
-        {page === 'memory' && <MemoryPage memory={memory} busy={busy} query={recallQuery} matches={recallMatches} onQuery={setRecallQuery} onRecall={recallNow} onSeed={seedSystemMemory} onRefresh={refreshCurrent} />}
-        {page === 'slides' && <AgentPage title="Living Slides" subtitle="Deck coherence" description="Recent PowerPoint decks. The next step is slide-level parsing and repair once you upload or open a deck." items={slides} busy={busy} analysis={analysis} onRefresh={refreshCurrent} actionLabel="Check coherence" onAnalyze={(file) => askGemini(`PowerPoint file metadata:\n${JSON.stringify(file)}\nInfer what consistency risks should be checked before a presentation.`, 'You are the slide coherence agent. Be concrete about theme, narrative, terminology, and slide deletion or repair options.')} />}
         {page === 'notes' && <AgentPage title="Living Notes" subtitle="Concept linker" description="Recent notes with previews. The agent looks for old concepts that connect to the new one." items={notes} busy={busy} analysis={analysis} onRefresh={refreshCurrent} actionLabel="Find links" onAnalyze={(file) => askGemini(`Note metadata and preview:\n${JSON.stringify(file)}`, 'You are the notes agent. Identify likely concept links, unknown invented terms, and one question to ask the user if meaning is ambiguous.')} />}
         {page === 'gallery' && <AgentPage title="Living Gallery" subtitle="Media memory" description="Recent pictures, screenshots, and videos. Useful for one-of-a-kind deletion warnings and confusing screenshot triage." items={gallery} busy={busy} analysis={analysis} onRefresh={refreshCurrent} actionLabel="Explain asset" onAnalyze={(file) => askGemini(`Media file metadata:\n${JSON.stringify(file)}`, 'You are the gallery agent. Infer likely purpose from filename, folder, and timestamp only. Flag whether deletion should be cautious.')} />}
         {page === 'files' && <AgentPage title="Living Files" subtitle="Workspace references" description="Files become objects with dependency, memory, and downstream context." items={dependencies.length ? dependencies : files} busy={busy} analysis={analysis} onRefresh={refreshCurrent} actionLabel="Assess risk" onAnalyze={(file) => askGemini(`File candidate:\n${JSON.stringify(file)}`, 'You are the file guardian. Explain what could break if this file is deleted, what evidence exists, and offer archive, fork, or remove-reference options.')} />}
