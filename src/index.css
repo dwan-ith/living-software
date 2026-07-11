@@ -9,10 +9,46 @@
   --red: #ff6b6b;
 }
 
-* { box-sizing: border-box; }
-html, body, #root { width: 100%; min-width: 320px; height: 100%; margin: 0; }
-button { font: inherit; }
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 320px;
+  height: 100%;
+  margin: 0;
+}
+
+button {
+  font: inherit;
+}
+
 body {
   overflow: hidden;
   background: #11161c url('/background.png') center / cover fixed;
+}
+
+/* ─── Electron desktop overlay mode ────────────────────────────────────── */
+/* html.overlay-mode is applied by JS when running inside the Electron shell */
+html.overlay-mode,
+html.overlay-mode body,
+html.overlay-mode #root {
+  background: transparent !important;
+}
+
+html.overlay-mode .shell>header,
+html.overlay-mode .workspace {
+  display: none !important;
+}
+
+html.overlay-mode .shell {
+  background: transparent !important;
+  padding: 0;
+}
+
+html.overlay-mode .cursor-companion {
+  z-index: 999999;
 }

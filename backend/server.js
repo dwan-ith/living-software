@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { GoogleGenAI } from '@google/genai';
@@ -5,7 +6,19 @@ import { renderImage } from './mockNB2.js';
 import ollama from 'ollama';
 import { WebSocketServer } from 'ws';
 import http from 'http';
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { analyzeDesktop, captureDesktop, detectLocalModel } from './screenObserver.js';
+import {
+    dependencySnapshot,
+    readClipboard,
+    recentDownloads,
+    recentGallery,
+    recentNotes,
+    recentSlides,
+    systemMap
+} from './workspaceAdapters.js';
 
 const app = express();
 app.use(cors());
@@ -13,6 +26,8 @@ app.use(express.json());
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+let companionProcess = null;
 
 const observer = {
     running: true,
@@ -32,7 +47,7 @@ function publicObserverState() {
         lastCaptureAt: observer.lastCapture?.capturedAt || null,
         lastIntervention: observer.lastIntervention,
         model: observer.model,
-        privacy: 'Screenshots are held in memory and sent only to the local Ollama endpoint.'
+        privacy: 'Screenshots are held in memory and sent to Gemini only for analysis.'
     };
 }
 
@@ -63,7 +78,14 @@ async function observerTick(forceAnalysis = false) {
         observer.model = await detectLocalModel();
         broadcast('observer_status', { state: publicObserverState() });
 
-        if (!observer.model.connected || !observer.model.visionCapable) return;
+        if (!observer.model.connected || !observer.model.visionCapable) {
+            broadcast('analysis_skipped', {
+                reason: observer.model.connected
+                    ? `${observer.model.model || 'The selected model'} does not expose vision capability.`
+                    : 'The Gemini API is not configured.'
+            });
+            return;
+        }
 
         broadcast('analysis_started', { model: observer.model.model });
         const analysis = await analyzeDesktop(capture.imageBase64, observer.model.model);
@@ -114,7 +136,141 @@ app.get('/api/observer/frame', (_req, res) => {
     });
 });
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || 'fake_api_key_for_hackathon' });
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, httpOptions: { apiVersion: 'v1' } });
+
+const notificationInbox = [
+    { id: 'n1', source: 'Calendar', project: 'Living Software', text: 'Hackathon presentation in 30 minutes', createdAt: new Date().toISOString() },
+    { id: 'n2', source: 'GitHub', project: 'Living Software', text: 'Frontend build completed', createdAt: new Date(Date.now() - 120000).toISOString() },
+    { id: 'n3', source: 'Messages', project: 'Living Software', text: 'Did you finish the demo slides?', createdAt: new Date(Date.now() - 240000).toISOString() }
+];
+
+function companionState() {
+    return {
+        running: Boolean(companionProcess && !companionProcess.killed && companionProcess.exitCode === null),
+        pid: companionProcess?.pid || null,
+        mode: 'native-windows-overlay'
+    };
+}
+
+app.get('/api/workspace/files', async (_req, res) => {
+    try {
+        res.json({ directory: 'Downloads', files: await recentDownloads() });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/workspace/slides', async (_req, res) => {
+    try {
+        res.json({ slides: await recentSlides() });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/workspace/notes', async (_req, res) => {
+    try {
+        res.json({ notes: await recentNotes() });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/workspace/gallery', async (_req, res) => {
+    try {
+        res.json({ media: await recentGallery() });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/workspace/dependencies', async (_req, res) => {
+    try {
+        res.json(await dependencySnapshot(path.resolve(__dirname, '..')));
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/workspace/system', async (_req, res) => {
+    try {
+        res.json(await systemMap());
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/workspace/clipboard', async (_req, res) => {
+    try {
+        res.json(await readClipboard());
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/workspace/notifications', (_req, res) => {
+    res.json({ notifications: notificationInbox });
+});
+
+app.post('/api/workspace/notifications', (req, res) => {
+    const item = { id: `n-${Date.now()}`, createdAt: new Date().toISOString(), ...req.body };
+    notificationInbox.unshift(item);
+    broadcast('notification', { notification: item });
+    res.status(201).json(item);
+});
+
+app.get('/api/companion/status', (_req, res) => {
+    res.json(companionState());
+});
+
+app.post('/api/companion/start', (_req, res) => {
+    if (companionState().running) return res.json(companionState());
+
+    const scriptPath = path.join(__dirname, 'nativeCompanion.ps1');
+    companionProcess = spawn('powershell.exe', [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        scriptPath
+    ], {
+        detached: true,
+        windowsHide: false,
+        stdio: 'ignore'
+    });
+    companionProcess.unref();
+    res.status(202).json(companionState());
+});
+
+app.post('/api/interactions/ask', async (req, res) => {
+    try {
+        const interaction = await ai.interactions.create({
+            model: 'gemini-3.5-flash',
+            input: req.body.input,
+            system_instruction: req.body.systemInstruction || 'You are the reasoning layer for Living Software. Be concise, grounded, and propose only reversible actions.',
+            previous_interaction_id: req.body.previousInteractionId,
+            store: true
+        });
+        res.json({ id: interaction.id, output: interaction.output_text, steps: interaction.steps || [] });
+    } catch (error) {
+        res.status(502).json({ error: error.message });
+    }
+});
+
+app.post('/api/interactions/delegate', async (req, res) => {
+    try {
+        const interaction = await ai.interactions.create({
+            agent: 'antigravity-preview-05-2026',
+            input: req.body.input,
+            environment: 'remote',
+            background: true,
+            store: true
+        });
+        res.status(202).json({ id: interaction.id, environmentId: interaction.environment_id, status: interaction.status, steps: interaction.steps || [] });
+    } catch (error) {
+        res.status(502).json({ error: error.message });
+    }
+});
 
 function chooseLocalDecision(organisms = [], preferredAction) {
     const active = organisms.filter((organism) => organism.status !== 'archived');

@@ -1,8 +1,12 @@
+import 'dotenv/config';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
+import { GoogleGenAI } from '@google/genai';
 
 const execFileAsync = promisify(execFile);
+const apiKey = process.env.GEMINI_API_KEY;
+const ai = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: 'v1' } });
 
 const CAPTURE_SCRIPT = [
     'Add-Type -AssemblyName System.Windows.Forms',
@@ -39,34 +43,14 @@ export async function captureDesktop() {
     };
 }
 
-async function fetchOllama(path, options = {}) {
-    const response = await fetch(`http://127.0.0.1:11434${path}`, {
-        ...options,
-        signal: AbortSignal.timeout(options.timeout || 8000)
-    });
-
-    if (!response.ok) throw new Error(`Ollama returned ${response.status}`);
-    return response.json();
-}
-
 export async function detectLocalModel() {
-    try {
-        const data = await fetchOllama('/api/tags', { timeout: 2500 });
-        const models = (data.models || []).map((item) => item.name);
-        const preferred = models.find((name) => /gemma3|gemma-3/i.test(name))
-            || models.find((name) => /llava|minicpm-v|qwen.*vl/i.test(name))
-            || models.find((name) => /gemma/i.test(name))
-            || models[0];
-
-        return {
-            connected: true,
-            model: preferred || null,
-            models,
-            visionCapable: Boolean(preferred && /gemma3|gemma-3|llava|minicpm-v|qwen.*vl/i.test(preferred))
-        };
-    } catch (error) {
-        return { connected: false, model: null, models: [], visionCapable: false, error: error.message };
-    }
+    return {
+        connected: Boolean(apiKey),
+        provider: 'google-interactions',
+        model: 'gemini-3.5-flash',
+        models: ['gemini-3.5-flash', 'antigravity-preview-05-2026'],
+        visionCapable: Boolean(apiKey)
+    };
 }
 
 export async function analyzeDesktop(imageBase64, model) {
@@ -84,21 +68,19 @@ Return only JSON with this schema:
 }
 Intervene only for a visible inconsistency, destructive action, error, broken workflow, or a clear cross-document question. Do not invent hidden dependencies. If there is no grounded reason, set shouldIntervene false and severity quiet.`;
 
-    const body = {
-        model,
-        stream: false,
-        format: 'json',
-        messages: [{ role: 'user', content: prompt, images: [imageBase64] }],
-        options: { temperature: 0.15 }
-    };
+    try {
+        const response = await ai.interactions.create({
+            model: 'gemini-3.5-flash',
+            input: [
+                { type: 'text', text: prompt },
+                { type: 'image', data: imageBase64, mime_type: 'image/jpeg' }
+            ],
+            store: false,
+            generation_config: { temperature: 0.15 }
+        });
 
-    const data = await fetchOllama('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        timeout: 45000
-    });
-
-    return JSON.parse(data.message?.content || '{}');
+        return JSON.parse(response.output_text || '{}');
+    } catch (e) {
+        throw new Error(`Gemini Interactions analysis failed: ${e.message}`);
+    }
 }
-
