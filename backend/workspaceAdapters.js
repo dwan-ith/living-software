@@ -3,8 +3,14 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { POWERSHELL_EXE, PROJECT_ROOT_DIR } from './config.js';
 
 const execFileAsync = promisify(execFile);
+
+const SKIP_DIRS = new Set([
+    'node_modules', 'dist', '.git', 'data', 'AppData', '$RECYCLE.BIN',
+    '.venv', 'venv', '__pycache__', '.next', 'coverage', 'build'
+]);
 
 function classifyFile(name) {
     const extension = path.extname(name).toLowerCase();
@@ -17,7 +23,13 @@ function classifyFile(name) {
 
 export async function recentDownloads(limit = 24) {
     const directory = path.join(os.homedir(), 'Downloads');
-    const names = await readdir(directory);
+    let names = [];
+    try {
+        names = await readdir(directory);
+    } catch (error) {
+        throw new Error(`Cannot read Downloads: ${error.message}`);
+    }
+
     const records = await Promise.all(names.slice(0, 300).map(async (name) => {
         try {
             const metadata = await stat(path.join(directory, name));
@@ -49,11 +61,12 @@ async function recentFilesFrom(directory, extensions, limit = 16) {
         }
 
         await Promise.all(names.slice(0, 180).map(async (name) => {
+            if (SKIP_DIRS.has(name) || name.startsWith('.')) return;
             const target = path.join(current, name);
             try {
                 const metadata = await stat(target);
                 if (metadata.isDirectory()) {
-                    if (!name.startsWith('.') && !['node_modules', 'AppData', '$RECYCLE.BIN'].includes(name)) await walk(target, depth + 1);
+                    await walk(target, depth + 1);
                     return;
                 }
                 if (!extensions.includes(path.extname(name).toLowerCase())) return;
@@ -102,20 +115,79 @@ export async function recentGallery() {
     return lists.flat().sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt)).slice(0, 24);
 }
 
-export async function dependencySnapshot(root = process.cwd()) {
-    const candidates = await recentFilesFrom(root, ['.js', '.ts', '.tsx', '.py', '.ipynb', '.md', '.json'], 80);
-    const names = candidates.map((item) => item.name);
-    const risky = candidates.slice(0, 24).map((file) => {
+function extractImportHints(sourceText) {
+    const hints = new Set();
+    const patterns = [
+        /from\s+['"]([^'"]+)['"]/g,
+        /import\s+['"]([^'"]+)['"]/g,
+        /require\(\s*['"]([^'"]+)['"]\s*\)/g,
+        /(?:include|import)\s+['"]([^'"]+)['"]/g
+    ];
+    for (const pattern of patterns) {
+        let match;
+        while ((match = pattern.exec(sourceText)) !== null) {
+            const raw = match[1];
+            if (!raw || raw.startsWith('http') || raw.startsWith('node:')) continue;
+            const base = path.basename(raw).replace(/\.(js|ts|tsx|jsx|mjs|cjs|py)$/i, '');
+            if (base) hints.add(base.toLowerCase());
+            hints.add(raw.toLowerCase());
+        }
+    }
+    return [...hints];
+}
+
+export async function dependencySnapshot(root = PROJECT_ROOT_DIR) {
+    const candidates = await recentFilesFrom(root, ['.js', '.ts', '.tsx', '.jsx', '.py', '.ipynb', '.md', '.json'], 100);
+    const sourceCandidates = candidates.filter((file) => {
+        const ext = path.extname(file.name).toLowerCase();
+        return ['.js', '.ts', '.tsx', '.jsx', '.py', '.ipynb'].includes(ext);
+    });
+
+    const importIndex = new Map(); // basenames referenced by other files
+    await Promise.all(sourceCandidates.slice(0, 60).map(async (file) => {
+        try {
+            const text = await readFile(file.path, 'utf8');
+            const sample = text.slice(0, 80_000);
+            for (const hint of extractImportHints(sample)) {
+                if (!importIndex.has(hint)) importIndex.set(hint, []);
+                importIndex.get(hint).push(file.name);
+            }
+        } catch {}
+    }));
+
+    const risky = sourceCandidates.slice(0, 40).map((file) => {
         const base = path.basename(file.name, path.extname(file.name));
-        const references = names.filter((name) => name !== file.name && name.toLowerCase().includes(base.toLowerCase().slice(0, 8))).length;
+        const baseLower = base.toLowerCase();
+        const importers = new Set([
+            ...(importIndex.get(baseLower) || []),
+            ...(importIndex.get(file.name.toLowerCase()) || [])
+        ]);
+        importers.delete(file.name);
+
+        // Fallback name-similarity only for short, distinctive stems.
+        let nameMatches = 0;
+        if (baseLower.length >= 4) {
+            nameMatches = candidates.filter((other) => {
+                if (other.name === file.name) return false;
+                const otherBase = path.basename(other.name, path.extname(other.name)).toLowerCase();
+                return otherBase.includes(baseLower) || baseLower.includes(otherBase.slice(0, Math.min(8, otherBase.length)));
+            }).length;
+        }
+
+        const references = importers.size || nameMatches;
         const signals = [];
-        if (['server', 'app', 'main', 'index', 'train', 'model'].some((part) => base.toLowerCase().includes(part))) signals.push('entrypoint-like name');
-        if (references) signals.push(`${references} nearby name match${references === 1 ? '' : 'es'}`);
+        if (['server', 'app', 'main', 'index', 'train', 'model'].some((part) => baseLower.includes(part))) {
+            signals.push('entrypoint-like name');
+        }
+        if (importers.size) signals.push(`${importers.size} import reference${importers.size === 1 ? '' : 's'}`);
+        else if (nameMatches) signals.push(`${nameMatches} nearby name match${nameMatches === 1 ? '' : 'es'}`);
         if (file.size > 50_000) signals.push('large source artifact');
+
         return {
             ...file,
             references,
-            risk: signals.length > 1 ? 'high' : signals.length ? 'medium' : 'low',
+            importers: [...importers].slice(0, 8),
+            risk: signals.length > 1 || importers.size >= 2 ? 'high' : signals.length ? 'medium' : 'low',
             signals
         };
     });
@@ -127,14 +199,20 @@ export async function dependencySnapshot(root = process.cwd()) {
     };
 }
 
-export async function systemMap() {
+export async function systemMap(options = {}) {
+    const projectRoot = options.projectRoot || PROJECT_ROOT_DIR;
+    const notificationCount = Number(options.notificationCount) || 0;
+    const memoryStats = options.memoryStats || { facts: 0, episodes: 0, associations: 0 };
+
     const [downloads, slides, notes, gallery, dependencies] = await Promise.all([
         recentDownloads(12),
         recentSlides(),
         recentNotes(),
         recentGallery(),
-        dependencySnapshot()
+        dependencySnapshot(projectRoot)
     ]);
+
+    const memoryCount = (memoryStats.facts || 0) + (memoryStats.episodes || 0) + (memoryStats.associations || 0);
 
     return {
         generatedAt: new Date().toISOString(),
@@ -142,18 +220,19 @@ export async function systemMap() {
             { id: 'screen', label: 'Screen', authority: 'continuous screenshot perception', count: 1, status: 'live' },
             { id: 'files', label: 'Files', authority: 'metadata scan of Downloads and workspace', count: downloads.length + dependencies.scanned, status: 'read-only' },
             { id: 'clipboard', label: 'Clipboard', authority: 'explicit user-triggered read', count: 1, status: 'consent-gated' },
-            { id: 'notifications', label: 'Notifications', authority: 'local inbox and app adapters', count: 3, status: 'demo-inbox' },
+            { id: 'notifications', label: 'Notifications', authority: 'local inbox', count: notificationCount, status: notificationCount ? 'live-inbox' : 'empty' },
             { id: 'slides', label: 'Slides', authority: 'PowerPoint file watcher', count: slides.length, status: 'metadata-ready' },
             { id: 'notes', label: 'Notes', authority: 'text note semantic linker', count: notes.length, status: 'preview-ready' },
             { id: 'gallery', label: 'Gallery', authority: 'Pictures and screenshot watcher', count: gallery.length, status: 'metadata-ready' },
             { id: 'downloads', label: 'Downloads', authority: 'intent sorting queue', count: downloads.length, status: 'metadata-ready' },
-            { id: 'dependencies', label: 'Dependency Graph', authority: 'workspace reference risk scan', count: dependencies.scanned, status: 'heuristic' }
+            { id: 'dependencies', label: 'Dependency Graph', authority: 'workspace reference risk scan', count: dependencies.scanned, status: 'heuristic' },
+            { id: 'memory', label: 'Memory', authority: 'persistent facts, episodes, and cross-surface associations', count: memoryCount, status: 'persistent' }
         ]
     };
 }
 
 export async function readClipboard() {
-    const { stdout } = await execFileAsync('powershell.exe', [
+    const { stdout } = await execFileAsync(POWERSHELL_EXE, [
         '-NoProfile',
         '-NonInteractive',
         '-Command',

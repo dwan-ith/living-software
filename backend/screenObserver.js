@@ -1,12 +1,9 @@
-import 'dotenv/config';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
-import { GoogleGenAI } from '@google/genai';
+import { extractJsonObject, GEMINI_MODEL, getGemini, hasGemini, POWERSHELL_EXE } from './config.js';
 
 const execFileAsync = promisify(execFile);
-const apiKey = process.env.GEMINI_API_KEY;
-const ai = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: 'v1' } });
 
 const CAPTURE_SCRIPT = [
     'Add-Type -AssemblyName System.Windows.Forms',
@@ -23,12 +20,23 @@ const CAPTURE_SCRIPT = [
     '$stream.Dispose()'
 ].join('; ');
 
+const QUIET_ANALYSIS = {
+    shouldIntervene: false,
+    severity: 'quiet',
+    application: 'unknown',
+    title: 'No intervention needed',
+    reason: 'No grounded inconsistency was detected on screen.',
+    evidence: [],
+    actions: [],
+    spoken: ''
+};
+
 export async function captureDesktop() {
     if (process.platform !== 'win32') {
         throw new Error('The current observer implementation requires Windows.');
     }
 
-    const { stdout } = await execFileAsync('powershell.exe', [
+    const { stdout } = await execFileAsync(POWERSHELL_EXE, [
         '-NoProfile',
         '-NonInteractive',
         '-ExecutionPolicy', 'Bypass',
@@ -36,6 +44,10 @@ export async function captureDesktop() {
     ], { maxBuffer: 32 * 1024 * 1024, windowsHide: true });
 
     const imageBase64 = stdout.trim();
+    if (!imageBase64 || imageBase64.length < 100) {
+        throw new Error('Screen capture returned an empty image.');
+    }
+
     return {
         imageBase64,
         fingerprint: createHash('sha256').update(imageBase64).digest('hex'),
@@ -44,16 +56,40 @@ export async function captureDesktop() {
 }
 
 export async function detectLocalModel() {
+    const connected = hasGemini();
     return {
-        connected: Boolean(apiKey),
+        connected,
         provider: 'google-interactions',
-        model: 'gemini-3.5-flash',
-        models: ['gemini-3.5-flash', 'antigravity-preview-05-2026'],
-        visionCapable: Boolean(apiKey)
+        model: GEMINI_MODEL,
+        models: [GEMINI_MODEL],
+        visionCapable: connected
     };
 }
 
-export async function analyzeDesktop(imageBase64, model) {
+function normalizeAnalysis(parsed) {
+    if (!parsed || typeof parsed !== 'object') return { ...QUIET_ANALYSIS };
+
+    const severity = ['quiet', 'notice', 'warning', 'critical'].includes(parsed.severity)
+        ? parsed.severity
+        : (parsed.shouldIntervene ? 'notice' : 'quiet');
+
+    return {
+        shouldIntervene: Boolean(parsed.shouldIntervene) && severity !== 'quiet',
+        severity,
+        application: String(parsed.application || 'unknown').slice(0, 80),
+        title: String(parsed.title || 'Screen observation').slice(0, 160),
+        reason: String(parsed.reason || '').slice(0, 600),
+        evidence: Array.isArray(parsed.evidence) ? parsed.evidence.map(String).slice(0, 3) : [],
+        actions: Array.isArray(parsed.actions) ? parsed.actions.map(String).slice(0, 3) : [],
+        spoken: String(parsed.spoken || '').slice(0, 280)
+    };
+}
+
+export async function analyzeDesktop(imageBase64, model = GEMINI_MODEL) {
+    if (!hasGemini()) {
+        throw new Error('Gemini API is not configured (missing GEMINI_API_KEY).');
+    }
+
     const prompt = `You are the local perception layer of Living Software. Inspect this Windows desktop screenshot.
 Return only JSON with this schema:
 {
@@ -69,8 +105,9 @@ Return only JSON with this schema:
 Intervene only for a visible inconsistency, destructive action, error, broken workflow, or a clear cross-document question. Do not invent hidden dependencies. If there is no grounded reason, set shouldIntervene false and severity quiet.`;
 
     try {
+        const ai = getGemini();
         const response = await ai.interactions.create({
-            model: 'gemini-3.5-flash',
+            model: model || GEMINI_MODEL,
             input: [
                 { type: 'text', text: prompt },
                 { type: 'image', data: imageBase64, mime_type: 'image/jpeg' }
@@ -79,8 +116,17 @@ Intervene only for a visible inconsistency, destructive action, error, broken wo
             generation_config: { temperature: 0.15 }
         });
 
-        return JSON.parse(response.output_text || '{}');
-    } catch (e) {
-        throw new Error(`Gemini Interactions analysis failed: ${e.message}`);
+        const parsed = extractJsonObject(response.output_text);
+        if (!parsed) {
+            // Model sometimes returns prose; treat as quiet rather than crashing the observer loop.
+            return {
+                ...QUIET_ANALYSIS,
+                title: 'Unparsed model response',
+                reason: String(response.output_text || '').slice(0, 400)
+            };
+        }
+        return normalizeAnalysis(parsed);
+    } catch (error) {
+        throw new Error(`Gemini screen analysis failed: ${error.message}`);
     }
 }

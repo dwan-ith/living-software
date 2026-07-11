@@ -7,53 +7,37 @@ $window.AllowsTransparency = $true
 $window.Background = [Windows.Media.Brushes]::Transparent
 $window.Topmost = $true
 $window.ShowInTaskbar = $false
-$window.Width = 260
-$window.Height = 92
+$window.Width = 34
+$window.Height = 34
 $window.Left = 100
 $window.Top = 100
 
-$root = New-Object Windows.Controls.Grid
+$root = New-Object Windows.Controls.Canvas
+$root.Width = 34
+$root.Height = 34
 $root.IsHitTestVisible = $false
 
-$panel = New-Object Windows.Controls.Border
-$panel.Width = 230
-$panel.Height = 54
-$panel.CornerRadius = 7
-$panel.Background = New-Object Windows.Media.SolidColorBrush ([Windows.Media.Color]::FromArgb(218, 15, 21, 27))
-$panel.BorderBrush = New-Object Windows.Media.SolidColorBrush ([Windows.Media.Color]::FromArgb(58, 255, 255, 255))
-$panel.BorderThickness = 1
-$panel.Margin = '24,18,0,0'
+$shadow = New-Object Windows.Shapes.Polygon
+$shadow.Points = [Windows.Media.PointCollection]::Parse('4,3 29,14 19,18 14,31')
+$shadow.Fill = New-Object Windows.Media.SolidColorBrush ([Windows.Media.Color]::FromArgb(90, 0, 0, 0))
+$shadow.RenderTransform = New-Object Windows.Media.TranslateTransform(2, 2)
 
-$stack = New-Object Windows.Controls.StackPanel
-$stack.Orientation = 'Horizontal'
-$stack.Margin = '8,8,10,8'
+$arrow = New-Object Windows.Shapes.Polygon
+$arrow.Points = [Windows.Media.PointCollection]::Parse('4,3 29,14 19,18 14,31')
+$arrow.Fill = [Windows.Media.Brushes]::Black
+$arrow.Stroke = New-Object Windows.Media.SolidColorBrush ([Windows.Media.Color]::FromRgb(79, 240, 184))
+$arrow.StrokeThickness = 1.35
 
-$orb = New-Object Windows.Shapes.Ellipse
-$orb.Width = 20
-$orb.Height = 20
-$orb.Fill = [Windows.Media.Brushes]::Black
-$orb.Stroke = New-Object Windows.Media.SolidColorBrush ([Windows.Media.Color]::FromRgb(79, 240, 184))
-$orb.StrokeThickness = 2
-$orb.Margin = '0,7,9,0'
+$pulse = New-Object Windows.Shapes.Ellipse
+$pulse.Width = 5
+$pulse.Height = 5
+$pulse.Fill = New-Object Windows.Media.SolidColorBrush ([Windows.Media.Color]::FromRgb(79, 240, 184))
+[Windows.Controls.Canvas]::SetLeft($pulse, 16)
+[Windows.Controls.Canvas]::SetTop($pulse, 15)
 
-$copy = New-Object Windows.Controls.StackPanel
-$title = New-Object Windows.Controls.TextBlock
-$title.Text = 'Living companion'
-$title.Foreground = [Windows.Media.Brushes]::White
-$title.FontSize = 11
-$title.FontWeight = 'Bold'
-$body = New-Object Windows.Controls.TextBlock
-$body.Text = 'Watching desktop context'
-$body.Foreground = New-Object Windows.Media.SolidColorBrush ([Windows.Media.Color]::FromArgb(150, 255, 255, 255))
-$body.FontSize = 10
-$body.Margin = '0,4,0,0'
-$copy.Children.Add($title) | Out-Null
-$copy.Children.Add($body) | Out-Null
-
-$stack.Children.Add($orb) | Out-Null
-$stack.Children.Add($copy) | Out-Null
-$panel.Child = $stack
-$root.Children.Add($panel) | Out-Null
+$root.Children.Add($shadow) | Out-Null
+$root.Children.Add($arrow) | Out-Null
+$root.Children.Add($pulse) | Out-Null
 $window.Content = $root
 
 $sourceInitialized = {
@@ -81,11 +65,11 @@ Add-Type $nativeCode
 $window.Add_SourceInitialized($sourceInitialized)
 
 $timer = New-Object Windows.Threading.DispatcherTimer
-$timer.Interval = [TimeSpan]::FromMilliseconds(28)
+$timer.Interval = [TimeSpan]::FromMilliseconds(24)
 $timer.Add_Tick({
     $cursor = [System.Windows.Forms.Cursor]::Position
-    $window.Left = [Math]::Min($cursor.X + 18, [System.Windows.SystemParameters]::VirtualScreenWidth - $window.Width)
-    $window.Top = [Math]::Min($cursor.Y + 18, [System.Windows.SystemParameters]::VirtualScreenHeight - $window.Height)
+    $window.Left = [Math]::Min($cursor.X + 12, [System.Windows.SystemParameters]::VirtualScreenWidth - $window.Width)
+    $window.Top = [Math]::Min($cursor.Y + 12, [System.Windows.SystemParameters]::VirtualScreenHeight - $window.Height)
 })
 $timer.Start()
 

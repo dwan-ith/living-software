@@ -48,7 +48,3 @@ html.overlay-mode .shell {
   background: transparent !important;
   padding: 0;
 }
-
-html.overlay-mode .cursor-companion {
-  z-index: 999999;
-}

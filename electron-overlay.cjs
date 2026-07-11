@@ -3,6 +3,12 @@ const path = require('path');
 
 let overlayWindow;
 
+function overlayUrl() {
+    return process.env.ELECTRON_OVERLAY_URL
+        || process.env.VITE_DEV_SERVER_URL
+        || 'http://127.0.0.1:5173';
+}
+
 app.commandLine.appendSwitch('enable-transparent-visuals');
 app.disableHardwareAcceleration();
 
@@ -35,7 +41,7 @@ app.on('ready', () => {
     overlayWindow.setVisibleOnAllWorkspaces(true);
 
     // Load the existing Vite dev server (no re-build needed!)
-    overlayWindow.loadURL('http://localhost:5173');
+    overlayWindow.loadURL(overlayUrl());
 
     // Signal to React that it is living inside the Electron overlay
     overlayWindow.webContents.on('did-finish-load', () => {

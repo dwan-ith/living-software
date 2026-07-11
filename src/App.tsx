@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-type Page = 'screen' | 'system' | 'slides' | 'notes' | 'gallery' | 'files' | 'downloads' | 'dependencies' | 'clipboard' | 'notifications';
+type Page = 'screen' | 'system' | 'rigor' | 'memory' | 'slides' | 'notes' | 'gallery' | 'files' | 'downloads' | 'dependencies' | 'clipboard' | 'notifications';
 type Tone = 'quiet' | 'active' | 'warning';
 type ModelState = { connected: boolean; model: string | null; visionCapable: boolean; provider?: string };
 type ObserverState = { running: boolean; lastCaptureAt: string | null; model: ModelState; privacy?: string };
@@ -11,6 +11,14 @@ type LogItem = { id: string; time: string; label: string; tone: Tone };
 type SystemSurface = { id: string; label: string; authority: string; count: number; status: string };
 type SystemMap = { generatedAt: string; surfaces: SystemSurface[] };
 type CompanionState = { running: boolean; pid: number | null; mode: string };
+type MemoryFact = { id: string; title: string; text: string; tags?: string[]; confidence?: number; source?: string; createdAt: string };
+type MemoryEpisode = { id: string; title: string; summary: string; surfaces?: string[]; importance?: number; source?: string; createdAt: string };
+type MemoryAssociation = { id: string; from: string; to: string; relation: string; strength: number; createdAt: string };
+type MemoryState = { facts: MemoryFact[]; episodes: MemoryEpisode[]; associations: MemoryAssociation[]; stats?: { facts: number; episodes: number; associations: number; path: string } };
+type RigorAgent = { id: string; label: string; mission: string; evidence: string[]; gaps: string[]; next: string; score: number; maturity: string };
+type RigorState = { generatedAt: string; sourceCount: number; average: number; verdict: string; agents: RigorAgent[] };
+type LocalModelState = { provider: string; host: string; targetModel: string; service: string; models: string[]; ready: boolean; pullCommand: string; error?: string; output?: string };
+const BACKEND_URL = (import.meta.env.VITE_BACKEND_URL || '').replace(/\/$/, '');
 
 const initialObserver: ObserverState = { running: false, lastCaptureAt: null, model: { connected: false, model: null, visionCapable: false } };
 
@@ -28,6 +36,18 @@ function fileMeta(file: FileItem) {
   return `${file.type} / ${size(file.size)} / ${new Date(file.modifiedAt).toLocaleDateString()}`;
 }
 
+function apiUrl(path: string) {
+  return BACKEND_URL ? `${BACKEND_URL}${path}` : path;
+}
+
+function wsUrl(path: string) {
+  if (BACKEND_URL) {
+    const base = BACKEND_URL.replace(/^http/, 'ws');
+    return `${base}${path}`;
+  }
+  return `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${path}`;
+}
+
 export default function App() {
   const [page, setPage] = useState<Page>('screen');
   const [observer, setObserver] = useState<ObserverState>(initialObserver);
@@ -40,24 +60,21 @@ export default function App() {
   const [gallery, setGallery] = useState<FileItem[]>([]);
   const [dependencies, setDependencies] = useState<FileItem[]>([]);
   const [system, setSystem] = useState<SystemMap | null>(null);
+  const [rigor, setRigor] = useState<RigorState | null>(null);
+  const [localModel, setLocalModel] = useState<LocalModelState | null>(null);
+  const [memory, setMemory] = useState<MemoryState | null>(null);
+  const [recallQuery, setRecallQuery] = useState('living software demo');
+  const [recallMatches, setRecallMatches] = useState<Array<(MemoryFact | MemoryEpisode) & { kind?: string; score?: number }>>([]);
   const [clipboard, setClipboard] = useState<{ text: string; kind: string; length: number } | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [companion, setCompanion] = useState<CompanionState>({ running: false, pid: null, mode: 'browser-dom' });
   const [analysis, setAnalysis] = useState('');
   const [busy, setBusy] = useState(false);
   const [voice, setVoice] = useState(true);
-  const [companionOpen, setCompanionOpen] = useState(false);
-  const [pointer, setPointer] = useState({ x: 70, y: 70 });
   const socketRef = useRef<WebSocket | null>(null);
   const voiceRef = useRef(voice);
 
   useEffect(() => { voiceRef.current = voice; }, [voice]);
-
-  useEffect(() => {
-    const move = (event: PointerEvent) => setPointer({ x: event.clientX, y: event.clientY });
-    window.addEventListener('pointermove', move, { passive: true });
-    return () => window.removeEventListener('pointermove', move);
-  }, []);
 
   function log(label: string, tone: Tone = 'quiet') {
     setLogs((items) => [{ id: crypto.randomUUID(), time: time(new Date().toISOString()), label, tone }, ...items].slice(0, 30));
@@ -77,12 +94,11 @@ export default function App() {
   useEffect(() => {
     let reconnect: number | undefined;
     let disposed = false;
-    fetch('/api/observer/status').then((r) => r.json()).then(setObserver).catch(() => log('Observer backend is offline.', 'warning'));
-    fetch('/api/companion/status').then((r) => r.json()).then(setCompanion).catch(() => {});
+    fetch(apiUrl('/api/observer/status')).then((r) => r.json()).then(setObserver).catch(() => log('Observer backend is offline.', 'warning'));
+    fetch(apiUrl('/api/companion/status')).then((r) => r.json()).then(setCompanion).catch(() => {});
 
     const connect = () => {
-      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const socket = new WebSocket(`${protocol}//${location.host}/observer-ws`);
+      const socket = new WebSocket(wsUrl('/observer-ws'));
       socketRef.current = socket;
       socket.onmessage = (event) => {
         const data = JSON.parse(event.data);
@@ -91,11 +107,12 @@ export default function App() {
         if (data.type === 'analysis_started') { setBusy(true); log(`${data.model} is examining the screen.`, 'active'); }
         if (data.type === 'analysis') { setBusy(false); if (!data.analysis.shouldIntervene) log('Screen is coherent. No pushback needed.'); }
         if (data.type === 'intervention') {
-          setBusy(false); setIntervention(data.intervention); setCompanionOpen(true); log(data.intervention.title, 'warning');
+          setBusy(false); setIntervention(data.intervention); log(data.intervention.title, 'warning');
           if (voiceRef.current && data.intervention.spoken) { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(data.intervention.spoken)); }
         }
         if (data.type === 'observer_error') { setBusy(false); log(data.message, 'warning'); }
         if (data.type === 'notification') setNotifications((items) => [data.notification, ...items]);
+        if (data.type === 'memory') { setMemory(null); log(`Memory stored: ${data.item.title}`, 'active'); }
       };
       socket.onclose = () => { if (!disposed) reconnect = window.setTimeout(connect, 1500); };
     };
@@ -104,21 +121,24 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (page === 'system' && !system) loadJson<{ generatedAt: string; surfaces: SystemSurface[] }>('/api/workspace/system', setSystem, 'System map could not be built.');
-    if ((page === 'files' || page === 'downloads') && !files.length) loadJson<{ files: FileItem[] }>('/api/workspace/files', (data) => setFiles(data.files || []), 'Downloads could not be read.');
-    if (page === 'slides' && !slides.length) loadJson<{ slides: FileItem[] }>('/api/workspace/slides', (data) => setSlides(data.slides || []), 'Slides could not be read.');
-    if (page === 'notes' && !notes.length) loadJson<{ notes: FileItem[] }>('/api/workspace/notes', (data) => setNotes(data.notes || []), 'Notes could not be read.');
-    if (page === 'gallery' && !gallery.length) loadJson<{ media: FileItem[] }>('/api/workspace/gallery', (data) => setGallery(data.media || []), 'Gallery could not be read.');
-    if (page === 'dependencies' && !dependencies.length) loadJson<{ files: FileItem[] }>('/api/workspace/dependencies', (data) => setDependencies(data.files || []), 'Dependency graph could not be read.');
-    if (page === 'notifications' && !notifications.length) loadJson<{ notifications: Notification[] }>('/api/workspace/notifications', (data) => setNotifications(data.notifications || []), 'Notification inbox could not be read.');
-  }, [page, files.length, slides.length, notes.length, gallery.length, dependencies.length, notifications.length, system]);
+    if (page === 'system' && !system) loadJson<{ generatedAt: string; surfaces: SystemSurface[] }>(apiUrl('/api/workspace/system'), setSystem, 'System map could not be built.');
+    if (page === 'rigor' && !rigor) loadJson<RigorState>(apiUrl('/api/agents/rigor'), setRigor, 'Rigor agents could not be loaded.');
+    if (page === 'rigor' && !localModel) loadJson<LocalModelState>(apiUrl('/api/local-model/status'), setLocalModel, 'Local model status could not be loaded.');
+    if (page === 'memory' && !memory) loadJson<MemoryState>(apiUrl('/api/memory'), setMemory, 'Memory could not be loaded.');
+    if ((page === 'files' || page === 'downloads') && !files.length) loadJson<{ files: FileItem[] }>(apiUrl('/api/workspace/files'), (data) => setFiles(data.files || []), 'Downloads could not be read.');
+    if (page === 'slides' && !slides.length) loadJson<{ slides: FileItem[] }>(apiUrl('/api/workspace/slides'), (data) => setSlides(data.slides || []), 'Slides could not be read.');
+    if (page === 'notes' && !notes.length) loadJson<{ notes: FileItem[] }>(apiUrl('/api/workspace/notes'), (data) => setNotes(data.notes || []), 'Notes could not be read.');
+    if (page === 'gallery' && !gallery.length) loadJson<{ media: FileItem[] }>(apiUrl('/api/workspace/gallery'), (data) => setGallery(data.media || []), 'Gallery could not be read.');
+    if (page === 'dependencies' && !dependencies.length) loadJson<{ files: FileItem[] }>(apiUrl('/api/workspace/dependencies'), (data) => setDependencies(data.files || []), 'Dependency graph could not be read.');
+    if (page === 'notifications' && !notifications.length) loadJson<{ notifications: Notification[] }>(apiUrl('/api/workspace/notifications'), (data) => setNotifications(data.notifications || []), 'Notification inbox could not be read.');
+  }, [page, files.length, slides.length, notes.length, gallery.length, dependencies.length, notifications.length, system, rigor, localModel, memory]);
 
   const modelLabel = useMemo(() => observer.model.connected ? `${observer.model.model} / Interactions` : 'Gemini not configured', [observer.model]);
 
   async function observerCommand(command: 'start' | 'pause' | 'analyze') {
     setBusy(command === 'analyze');
     try {
-      const response = await fetch(`/api/observer/${command}`, { method: 'POST' });
+      const response = await fetch(apiUrl(`/api/observer/${command}`), { method: 'POST' });
       setObserver(await response.json());
       log(command === 'pause' ? 'Continuous observation paused.' : command === 'start' ? 'Continuous observation resumed.' : 'Manual screen analysis requested.', 'active');
     } catch { setBusy(false); log('Observer command failed.', 'warning'); }
@@ -126,7 +146,7 @@ export default function App() {
 
   async function startNativeCompanion() {
     try {
-      const response = await fetch('/api/companion/start', { method: 'POST' });
+      const response = await fetch(apiUrl('/api/companion/start'), { method: 'POST' });
       const data = await response.json();
       setCompanion(data);
       log(data.running ? `Native desktop companion running as PID ${data.pid}.` : 'Native desktop companion requested.', 'active');
@@ -138,7 +158,7 @@ export default function App() {
   async function readClipboardNow() {
     setBusy(true);
     try {
-      const response = await fetch('/api/workspace/clipboard');
+      const response = await fetch(apiUrl('/api/workspace/clipboard'));
       const data = await response.json();
       setClipboard(data);
       log(`Clipboard read as ${data.kind}.`, 'active');
@@ -149,7 +169,7 @@ export default function App() {
   async function askGemini(input: string, instruction: string) {
     setBusy(true); setAnalysis('');
     try {
-      const response = await fetch('/api/interactions/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input, systemInstruction: instruction }) });
+      const response = await fetch(apiUrl('/api/interactions/ask'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input, systemInstruction: instruction, withMemory: true }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
       setAnalysis(data.output || 'Gemini returned no text.');
@@ -163,6 +183,8 @@ export default function App() {
   function refreshCurrent() {
     setAnalysis('');
     if (page === 'system') setSystem(null);
+    if (page === 'rigor') { setRigor(null); setLocalModel(null); }
+    if (page === 'memory') { setMemory(null); setRecallMatches([]); }
     if (page === 'slides') setSlides([]);
     if (page === 'notes') setNotes([]);
     if (page === 'gallery') setGallery([]);
@@ -171,9 +193,60 @@ export default function App() {
     if (page === 'notifications') setNotifications([]);
   }
 
+  async function testLocalModel() {
+    setBusy(true);
+    try {
+      const response = await fetch(apiUrl('/api/local-model/test'), { method: 'POST' });
+      const data = await response.json();
+      setLocalModel(data);
+      if (!response.ok) throw new Error(data.error);
+      log(`Local Gemma replied: ${data.output}`, 'active');
+    } catch {
+      log('Local Gemma is not ready yet.', 'warning');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function seedSystemMemory() {
+    setBusy(true);
+    try {
+      const response = await fetch(apiUrl('/api/memory/seed-system'), { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      setMemory(null);
+      log(`Remembered: ${data.episode.title}`, 'active');
+    } catch {
+      log('System memory could not be seeded.', 'warning');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function recallNow() {
+    setBusy(true);
+    try {
+      const response = await fetch(apiUrl('/api/memory/recall'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: recallQuery, limit: 8 })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      setRecallMatches(data.matches || []);
+      log(`Memory recalled ${data.matches?.length || 0} item${data.matches?.length === 1 ? '' : 's'}.`, 'active');
+    } catch {
+      log('Memory recall failed.', 'warning');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const pages: Array<{ id: Page; label: string; note: string; glyph: string }> = [
     { id: 'screen', label: 'Screen', note: 'Whole-desktop perception', glyph: 'S' },
     { id: 'system', label: 'System', note: 'Unified world model', glyph: 'M' },
+    { id: 'rigor', label: 'Rigor', note: 'Agent readiness', glyph: 'Q' },
+    { id: 'memory', label: 'Memory', note: 'Recall and episodes', glyph: 'E' },
     { id: 'slides', label: 'Slides', note: 'Deck coherence', glyph: 'P' },
     { id: 'notes', label: 'Notes', note: 'Concept linking', glyph: 'N' },
     { id: 'gallery', label: 'Gallery', note: 'Media meaning', glyph: 'G' },
@@ -205,6 +278,8 @@ export default function App() {
       <section className="stage">
         {page === 'screen' && <ScreenPage frame={frame} observer={observer} busy={busy} onAnalyze={() => observerCommand('analyze')} />}
         {page === 'system' && <SystemPage system={system} frame={frame} busy={busy} onRefresh={refreshCurrent} onSynthesize={() => askGemini(`Build a single world model from these system surfaces:\n${JSON.stringify(system?.surfaces || [])}\nLast screen timestamp: ${observer.lastCaptureAt}`, 'You are the system-understanding agent. Explain what the user is doing across the whole computer, what is missing, and the next reversible action.')} />}
+        {page === 'rigor' && <RigorPage rigor={rigor} localModel={localModel} busy={busy} onRefresh={refreshCurrent} onTestLocal={testLocalModel} />}
+        {page === 'memory' && <MemoryPage memory={memory} busy={busy} query={recallQuery} matches={recallMatches} onQuery={setRecallQuery} onRecall={recallNow} onSeed={seedSystemMemory} onRefresh={refreshCurrent} />}
         {page === 'slides' && <AgentPage title="Living Slides" subtitle="Deck coherence" description="Recent PowerPoint decks. The next step is slide-level parsing and repair once you upload or open a deck." items={slides} busy={busy} analysis={analysis} onRefresh={refreshCurrent} actionLabel="Check coherence" onAnalyze={(file) => askGemini(`PowerPoint file metadata:\n${JSON.stringify(file)}\nInfer what consistency risks should be checked before a presentation.`, 'You are the slide coherence agent. Be concrete about theme, narrative, terminology, and slide deletion or repair options.')} />}
         {page === 'notes' && <AgentPage title="Living Notes" subtitle="Concept linker" description="Recent notes with previews. The agent looks for old concepts that connect to the new one." items={notes} busy={busy} analysis={analysis} onRefresh={refreshCurrent} actionLabel="Find links" onAnalyze={(file) => askGemini(`Note metadata and preview:\n${JSON.stringify(file)}`, 'You are the notes agent. Identify likely concept links, unknown invented terms, and one question to ask the user if meaning is ambiguous.')} />}
         {page === 'gallery' && <AgentPage title="Living Gallery" subtitle="Media memory" description="Recent pictures, screenshots, and videos. Useful for one-of-a-kind deletion warnings and confusing screenshot triage." items={gallery} busy={busy} analysis={analysis} onRefresh={refreshCurrent} actionLabel="Explain asset" onAnalyze={(file) => askGemini(`Media file metadata:\n${JSON.stringify(file)}`, 'You are the gallery agent. Infer likely purpose from filename, folder, and timestamp only. Flag whether deletion should be cautious.')} />}
@@ -222,8 +297,6 @@ export default function App() {
         <div className="event-list">{logs.length ? logs.map((item) => <div className={`event ${item.tone}`} key={item.id}><time>{item.time}</time><p>{item.label}</p></div>) : <div className="event"><time>Now</time><p>Persistent computer is connected.</p></div>}</div>
       </aside>
     </section>
-
-    <button className={`cursor-companion ${companionOpen ? 'open' : ''} ${intervention ? 'alert' : ''}`} style={{ transform: `translate3d(${Math.min(pointer.x + 8, window.innerWidth - 260)}px, ${Math.min(pointer.y + 8, window.innerHeight - 110)}px, 0)` }} onClick={() => setCompanionOpen((value) => !value)} aria-label="Living companion"><span className="companion-orb" /><span className="companion-copy"><strong>{intervention ? 'Wait. This may break context.' : busy ? 'Thinking with Gemini' : companion.running ? 'Desktop companion is live.' : 'I am watching with you.'}</strong><small>{intervention?.title || (companion.running ? 'Native cursor follows outside browser.' : 'Use Desktop cursor for system-wide overlay.')}</small></span></button>
   </main>;
 }
 
@@ -233,6 +306,17 @@ function ScreenPage({ frame, observer, busy, onAnalyze }: { frame: string; obser
 
 function SystemPage({ system, frame, busy, onRefresh, onSynthesize }: { system: SystemMap | null; frame: string; busy: boolean; onRefresh: () => void; onSynthesize: () => void }) {
   return <div className="surface data-surface"><div className="surface-heading"><div><span>Whole System</span><h2>Computer world model</h2><p>One map of screens, files, notes, media, clipboard, downloads, and interruptions.</p></div><div className="format-actions"><button onClick={onRefresh}>Refresh</button><button className="primary" onClick={onSynthesize} disabled={busy || !system}>Synthesize</button></div></div><div className="system-grid"><section className="world-frame">{frame ? <img src={frame} alt="Current desktop frame" /> : <div className="empty-data"><strong>No frame yet</strong><p>Start observation to build the screen layer.</p></div>}</section><section className="surface-list">{(system?.surfaces || []).map((surface) => <article className="system-row" key={surface.id}><span>{surface.count}</span><div><strong>{surface.label}</strong><p>{surface.authority}</p></div><small>{surface.status}</small></article>)}</section></div></div>;
+}
+
+function RigorPage({ rigor, localModel, busy, onRefresh, onTestLocal }: { rigor: RigorState | null; localModel: LocalModelState | null; busy: boolean; onRefresh: () => void; onTestLocal: () => void }) {
+  return <div className="surface data-surface"><div className="surface-heading"><div><span>Development Rigor</span><h2>Agent readiness</h2><p>Evidence, gaps, and next executable loops. This is where the idea gets held to account.</p></div><button onClick={onRefresh}>Refresh</button></div><section className="rigor-summary"><article><span>{rigor?.average || 0}</span><strong>System score</strong><p>{rigor?.verdict || 'Loading project rigor.'}</p></article><article><span>{rigor?.sourceCount || 0}</span><strong>Source files</strong><p>Implementation surface currently scanned.</p></article><article className={localModel?.ready ? 'ready' : 'warning'}><span>{localModel?.ready ? 'On' : 'Off'}</span><strong>Local model</strong><p>{localModel?.service === 'online' ? `${localModel.models.length} Ollama models visible` : localModel?.pullCommand || 'Waiting for backend status'}</p></article></section><section className="local-model-panel"><div><strong>Local model lane</strong><p>{localModel?.ready ? `${localModel.targetModel} is ready for private local reasoning.` : localModel ? `Target ${localModel.targetModel} is waiting for Ollama at ${localModel.host}.` : 'Loading local model configuration.'}</p>{localModel?.error ? <small>{localModel.error}</small> : null}</div><button className="primary" onClick={onTestLocal} disabled={busy}>Test Local</button></section><div className="rigor-grid">{(rigor?.agents || []).map((agent) => <article className="rigor-card" key={agent.id}><header><div><strong>{agent.label}</strong><span>{agent.maturity}</span></div><b>{agent.score}</b></header><p>{agent.mission}</p><section><strong>Evidence</strong>{agent.evidence.map((item) => <small key={item}>{item}</small>)}</section><section><strong>Gaps</strong>{agent.gaps.map((item) => <small key={item}>{item}</small>)}</section><footer>{agent.next}</footer></article>)}</div></div>;
+}
+
+function MemoryPage({ memory, busy, query, matches, onQuery, onRecall, onSeed, onRefresh }: { memory: MemoryState | null; busy: boolean; query: string; matches: Array<(MemoryFact | MemoryEpisode) & { kind?: string; score?: number }>; onQuery: (value: string) => void; onRecall: () => void; onSeed: () => void; onRefresh: () => void }) {
+  const facts = memory?.facts || [];
+  const episodes = memory?.episodes || [];
+  const associations = memory?.associations || [];
+  return <div className="surface data-surface"><div className="surface-heading"><div><span>Living Memory</span><h2>Recall layer</h2><p>Persistent facts, episodes, and cross-surface associations used by every Gemini interaction.</p></div><div className="format-actions"><button onClick={onRefresh}>Refresh</button><button className="primary" onClick={onSeed} disabled={busy}>Remember system</button></div></div><section className="memory-search"><input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="Search memory..." /><button onClick={onRecall} disabled={busy}>Recall</button></section><section className="memory-stats"><article><span>{memory?.stats?.facts || 0}</span><strong>Facts</strong></article><article><span>{memory?.stats?.episodes || 0}</span><strong>Episodes</strong></article><article><span>{memory?.stats?.associations || 0}</span><strong>Links</strong></article></section>{matches.length ? <section className="memory-block"><header><strong>Recall results</strong><span>{matches.length}</span></header>{matches.map((item) => <article className="memory-item" key={`${item.kind}-${item.id}`}><span>{item.kind || 'memory'}</span><div><strong>{item.title}</strong><p>{'text' in item ? item.text : item.summary}</p></div><small>{Math.round((item.score || 0) * 100)}%</small></article>)}</section> : null}<section className="memory-columns"><div className="memory-block"><header><strong>Facts</strong><span>{facts.length}</span></header>{facts.map((fact) => <article className="memory-card" key={fact.id}><strong>{fact.title}</strong><p>{fact.text}</p><small>{fact.tags?.join(', ') || fact.source}</small></article>)}</div><div className="memory-block"><header><strong>Episodes</strong><span>{episodes.length}</span></header>{episodes.map((episode) => <article className="memory-card" key={episode.id}><strong>{episode.title}</strong><p>{episode.summary}</p><small>{episode.surfaces?.join(', ') || episode.source}</small></article>)}</div></section><section className="memory-block"><header><strong>Associations</strong><span>{associations.length}</span></header>{associations.map((association) => <article className="association-row" key={association.id}><span>{association.from}</span><strong>{association.to}</strong><p>{association.relation}</p></article>)}</section></div>;
 }
 
 function AgentPage({ title, subtitle, description, items, busy, analysis, onRefresh, actionLabel, onAnalyze }: { title: string; subtitle: string; description: string; items: FileItem[]; busy: boolean; analysis: string; onRefresh: () => void; actionLabel: string; onAnalyze: (file: FileItem) => void }) {

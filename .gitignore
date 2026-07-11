@@ -8,3 +8,4 @@ dist/
 *.err.log
 backend/error_utf8.log
 backend/out.log
+backend/data/
