@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint src vite.config.ts",
-    "overlay": "electron electron-overlay.js",
+    "overlay": "electron --no-force-local-app-data electron-overlay.cjs",
     "preview": "vite preview"
   },
   "dependencies": {

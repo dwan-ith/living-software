@@ -3,3 +3,8 @@
 .env.*
 !.env.example
 OllamaSetup.exe
+dist/
+*.log
+*.err.log
+backend/error_utf8.log
+backend/out.log
