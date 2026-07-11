@@ -514,36 +514,16 @@ app.post('/api/dream/broken-future', async (req, res) => {
         if (hasGemini()) {
             try {
                 const ai = getGemini();
-                // gemini-omni-flash-preview: video/multimodal preview — uses Interactions API
-                const prompt = `Create a dark dependency graph diagram showing a broken file relationship. Title: "${title}". Context: ${reason}. Style: dark UI, red error nodes, amber warning lines, minimal labels.`;
-                const interaction = await ai.interactions.create({
-                    model: GEMINI_OMNI_MODEL || 'gemini-omni-flash-preview',
-                    input: prompt,
-                    store: false
-                });
-                // Extract any image from the Omni Flash response
-                const imageStep = (interaction.steps || []).find((s) => s.type === 'model_output');
-                const imagePart = (imageStep?.content || []).find((b) => b.type === 'image' && b.data);
-                if (imagePart) {
-                    return res.json({
-                        success: true,
-                        imageBase64: imagePart.data,
-                        mimeType: imagePart.mime_type || 'image/png',
-                        source: 'gemini-omni-flash-preview'
-                    });
+                // First try Nano Banana image gen grounded in the current screenshot
+                const imgPrompt = `Based on this desktop screenshot, show the future state if this error goes unaddressed: "${title}". Context: ${reason}. Make the UI look glitched, broken, or highlight the error precisely in the context of the screen.`;
+                const parts = [{ text: imgPrompt }];
+                if (observer.lastCapture?.imageBase64) {
+                    parts.push({ inlineData: { data: observer.lastCapture.imageBase64, mimeType: 'image/jpeg' } });
                 }
-                // Fall through to Nano Banana image gen if Omni returned no image
-            } catch (omniError) {
-                console.warn('Omni Flash broken-future failed, trying Nano Banana:', omniError.message);
-            }
-
-            try {
-                const ai = getGemini();
-                const imgPrompt = `Abstract dark dependency fracture diagram: "${title}". Red error nodes, amber broken edges, dark background.`;
                 const response = await ai.models.generateContent({
                     model: GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image',
-                    contents: [{ role: 'user', parts: [{ text: imgPrompt }] }],
-                    generationConfig: { responseModalities: ['TEXT', 'IMAGE'] }
+                    contents: [{ role: 'user', parts }],
+                    config: { responseModalities: ['TEXT', 'IMAGE'] }
                 });
                 for (const part of response.candidates?.[0]?.content?.parts || []) {
                     if (part.inlineData?.data) {
