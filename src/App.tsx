@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-type Page = 'screen' | 'system' | 'rigor' | 'memory' | 'slides' | 'notes' | 'gallery' | 'files' | 'downloads' | 'dependencies' | 'clipboard' | 'notifications';
+type Page = 'screen' | 'system' | 'rigor' | 'memory' | 'slides' | 'notes' | 'gallery' | 'files' | 'downloads' | 'dependencies' | 'clipboard' | 'notifications' | 'issues' | 'logs';
 type Tone = 'quiet' | 'active' | 'warning';
 type ModelState = { connected: boolean; model: string | null; visionCapable: boolean; provider?: string };
 type ObserverState = { running: boolean; lastCaptureAt: string | null; model: ModelState; privacy?: string };
-type Intervention = { severity: 'quiet' | 'notice' | 'warning' | 'critical'; application: string; title: string; reason: string; evidence?: string[]; actions?: string[]; spoken?: string };
+type Intervention = { id: string; severity: 'quiet' | 'notice' | 'warning' | 'critical'; application: string; title: string; reason: string; evidence?: string[]; actions?: string[]; spoken?: string; brokenFuture?: any; videoPreview?: any };
 type FileItem = { name: string; path: string; type: string; size: number; modifiedAt: string; preview?: string; risk?: 'low' | 'medium' | 'high'; references?: number; signals?: string[] };
 type Notification = { id: string; source: string; project: string; text: string; createdAt: string };
 type LogItem = { id: string; time: string; label: string; tone: Tone };
@@ -52,7 +52,8 @@ export default function App() {
   const [page, setPage] = useState<Page>('screen');
   const [observer, setObserver] = useState<ObserverState>(initialObserver);
   const [frame, setFrame] = useState('');
-  const [intervention, setIntervention] = useState<Intervention | null>(null);
+  const [interventions, setInterventions] = useState<Intervention[]>([]);
+  const [issueHistory, setIssueHistory] = useState<Intervention[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [files, setFiles] = useState<FileItem[]>([]);
   const [slides, setSlides] = useState<FileItem[]>([]);
@@ -71,9 +72,12 @@ export default function App() {
   const [analysis, setAnalysis] = useState('');
   const [busy, setBusy] = useState(false);
   const [voice, setVoice] = useState(true);
-  const [brokenFuture, setBrokenFuture] = useState<{ imageBase64: string; mimeType: string; source: string } | null>(null);
+  const [speakLang, setSpeakLang] = useState<'en' | 'hi' | 'zh' | 'es' | 'ar'>('en');
+  const [listening, setListening] = useState(false);
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const voiceRef = useRef(voice);
+  const recognitionRef = useRef<any>(null);
 
   useEffect(() => { voiceRef.current = voice; }, [voice]);
 
@@ -108,11 +112,31 @@ export default function App() {
         if (data.type === 'analysis_started') { setBusy(true); log(`${data.model} is examining the screen.`, 'active'); }
         if (data.type === 'analysis') { setBusy(false); if (!data.analysis.shouldIntervene) log('Screen is coherent. No pushback needed.'); }
         if (data.type === 'intervention') {
-          setBusy(false); setIntervention(data.intervention); setBrokenFuture(null); log(data.intervention.title, 'warning');
-          if (voiceRef.current && data.intervention.spoken) { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(data.intervention.spoken)); }
-          // Auto-load Nano Banana broken-future image
-          fetch(apiUrl('/api/dream/broken-future'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: data.intervention.title, reason: data.intervention.reason }) })
-            .then((r) => r.json()).then(setBrokenFuture).catch(() => { });
+          setBusy(false);
+          // Deduplicate: skip if same title already exists
+          setIssueHistory(prev => {
+            if (prev.some(i => i.title === data.intervention.title)) return prev;
+            const newIssue: Intervention = { ...data.intervention, id: crypto.randomUUID() };
+            setInterventions(curr => {
+              if (curr.some(i => i.title === data.intervention.title)) return curr;
+              fetch(apiUrl('/api/dream/broken-future'), {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: data.intervention.title, reason: data.intervention.reason })
+              }).then(r => r.json()).then(img => {
+                setInterventions(p => p.map(i => i.id === newIssue.id ? { ...i, brokenFuture: img } : i));
+              }).catch(() => { });
+              fetch(apiUrl('/api/dream/video-preview'), {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: data.intervention.title, reason: data.intervention.reason })
+              }).then(r => r.json()).then(vid => {
+                setInterventions(p => p.map(i => i.id === newIssue.id ? { ...i, videoPreview: vid } : i));
+              }).catch(() => { });
+              return [newIssue, ...curr];
+            });
+            log(data.intervention.title, 'warning');
+            if (voiceRef.current && data.intervention.spoken) speakWithGeminiTranslation(data.intervention.spoken, 'en');
+            return [newIssue, ...prev].slice(0, 50);
+          });
         }
         if (data.type === 'observer_error') { setBusy(false); log(data.message, 'warning'); }
         if (data.type === 'notification') setNotifications((items) => [data.notification, ...items]);
@@ -137,7 +161,7 @@ export default function App() {
     if (page === 'notifications' && !notifications.length) loadJson<{ notifications: Notification[] }>(apiUrl('/api/workspace/notifications'), (data) => setNotifications(data.notifications || []), 'Notification inbox could not be read.');
   }, [page, files.length, slides.length, notes.length, gallery.length, dependencies.length, notifications.length, system, rigor, localModel, memory]);
 
-  const modelLabel = useMemo(() => observer.model.connected ? `${observer.model.model} / Interactions` : 'Gemini not configured', [observer.model]);
+  const modelLabel = useMemo(() => observer.model.connected ? `${observer.model.model} / Google GenAI` : 'Gemini not configured', [observer.model]);
 
   async function observerCommand(command: 'start' | 'pause' | 'analyze') {
     setBusy(command === 'analyze');
@@ -184,13 +208,82 @@ export default function App() {
     } finally { setBusy(false); }
   }
 
-  function speakIntervention(text: string) {
-    speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.95;
-    utterance.pitch = 0.9;
-    speechSynthesis.speak(utterance);
-    log('Voice: speaking intervention.', 'active');
+  async function speakWithGeminiTranslation(text: string, lang: string) {
+    if (!voiceRef.current) return;
+    const locale = lang === 'hi' ? 'hi-IN' : lang === 'zh' ? 'zh-CN' : lang === 'es' ? 'es-ES' : lang === 'ar' ? 'ar-SA' : 'en-US';
+    let textToSpeak = text;
+
+    if (lang !== 'en') {
+      const langNames: Record<string, string> = { hi: 'Hindi', zh: 'Mandarin Chinese', es: 'Spanish', ar: 'Arabic' };
+      try {
+        const res = await fetch(apiUrl('/api/interactions/ask'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            input: `Translate this strictly to ${langNames[lang] || lang}, no quotes, no extra text: ${text}`,
+            systemInstruction: 'You are a precise translator. Output only the translation.'
+          })
+        }).then(r => r.json());
+        if (res.output) textToSpeak = res.output;
+      } catch { }
+    }
+
+    const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${locale}&client=tw-ob&q=${encodeURIComponent(textToSpeak.slice(0, 200))}`;
+    const audio = new Audio(url);
+    audio.play().catch(() => {
+      log('Natural TTS playback failed, falling back to local voice.', 'warning');
+      speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(textToSpeak);
+      utterance.lang = locale;
+      speechSynthesis.speak(utterance);
+    });
+
+    log(`Voice: speaking natively in ${locale}`, 'active');
+  }
+
+  async function toggleListen() {
+    if (listening && recognitionRef.current) {
+      (recognitionRef.current as MediaRecorder).stop();
+      setListening(false);
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      recognitionRef.current = mediaRecorder;
+      const audioChunks: BlobPart[] = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(track => track.stop());
+        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        const reader = new FileReader();
+        reader.readAsDataURL(audioBlob);
+        reader.onloadend = async () => {
+          const base64data = (reader.result as string).split(',')[1];
+          log('Sending audio to Gemini API...', 'active');
+          const res = await fetch(apiUrl('/api/interactions/ask'), {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              input: "Listen to the user's spoken audio. Address them back concisely in one sentence in the designated language.",
+              audioBase64: base64data,
+              audioMimeType: 'audio/webm'
+            })
+          }).then(r => r.json()).catch(() => ({ output: 'Audio processing failed.' }));
+          if (res.output) speakWithGeminiTranslation(res.output, speakLang);
+        };
+      };
+
+      mediaRecorder.start();
+      setListening(true);
+      log('Listening via Gemini API...', 'active');
+    } catch {
+      log('Microphone access denied or error.', 'warning');
+      setListening(false);
+    }
   }
 
   function refreshCurrent() {
@@ -267,25 +360,49 @@ export default function App() {
   ];
 
   return <main className="shell">
+    {lightboxSrc && (
+      <div className="lightbox-overlay" onClick={() => setLightboxSrc(null)}>
+        <img src={lightboxSrc} alt="Full size" onClick={e => e.stopPropagation()} />
+        <button className="lightbox-close" onClick={() => setLightboxSrc(null)}>✕ Close</button>
+      </div>
+    )}
     <header className="topbar glass">
-      <div className="identity"><span className={`pulse ${observer.running ? 'live' : ''}`} /><div><strong>Persistent Computer</strong><small>Persistent computer layer</small></div></div>
+      <div className="identity"><span className={`pulse ${observer.running ? 'live' : ''}`} /><div><strong>Persistent Computer</strong><small>Continuous Computing Objects</small></div></div>
       <div className="top-actions">
         <span className={`model-state ${observer.model.connected ? 'ready' : ''}`}>{modelLabel}</span>
-        <button className="icon-button" title={voice ? 'Mute voice' : 'Enable voice'} onClick={() => setVoice((value) => !value)}>{voice ? 'Voice on' : 'Voice off'}</button>
+        <button className="icon-button" title={voice ? 'Mute voice' : 'Enable voice'} onClick={() => setVoice(v => !v)} style={{ background: voice ? 'rgba(79,240,184,0.18)' : undefined }}>{voice ? '🔊 Voice on' : '🔇 Off'}</button>
+        <select className="lang-select" value={speakLang} onChange={e => setSpeakLang(e.target.value as typeof speakLang)} title="Voice language">
+          <option value="en">🇬🇧 EN</option><option value="hi">🇮🇳 HI</option><option value="zh">🇨🇳 ZH</option><option value="es">🇪🇸 ES</option><option value="ar">🇸🇦 AR</option>
+        </select>
+        <button className={`icon-button${listening ? ' listening-pulse' : ''}`} onClick={toggleListen} title="Speak to Gemini" style={{ background: listening ? '#c0392b' : undefined }}>🎙️ {listening ? 'Stop' : 'Mic'}</button>
         <button className="icon-button" title="Launch native desktop companion" onClick={startNativeCompanion}>{companion.running ? 'Companion live' : 'Desktop cursor'}</button>
         <button className="quiet-button" onClick={() => observerCommand(observer.running ? 'pause' : 'start')}>{observer.running ? 'Pause' : 'Resume'}</button>
       </div>
     </header>
 
     <section className="workspace">
-      <aside className="rail glass">
-        <div className="rail-title"><span>Living agents</span><strong>{observer.running ? 'Watching' : 'Paused'}</strong></div>
-        <nav>{pages.map((item) => <button key={item.id} className={`nav-item ${page === item.id ? 'active' : ''}`} onClick={() => { setPage(item.id); setAnalysis(''); }}><span className="nav-icon">{item.glyph}</span><div><strong>{item.label}</strong><small>{item.note}</small></div></button>)}</nav>
-        <div className="privacy-note"><span>Visible authority</span><p>Screen frames are the global context. Files and media use metadata first. Clipboard requires a click. Fix actions stay reversible.</p></div>
+      <aside className="rail glass" style={{ display: 'flex', flexDirection: 'column' }}>
+        <div className="rail-title"><span>Computer</span><strong>{observer.running ? 'Watching' : 'Paused'}</strong></div>
+        <nav style={{ flex: 1, overflowY: 'auto' }}>{pages.map((item) => <button key={item.id} className={`nav-item ${page === item.id ? 'active' : ''}`} onClick={() => { setPage(item.id); setAnalysis(''); }}><span className="nav-icon">{item.glyph}</span><div><strong>{item.label}</strong><small>{item.note}</small></div></button>)}</nav>
+
+        <div style={{ padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+          <button className={`nav-item ${page === 'issues' ? 'active' : ''}`} style={{ margin: 0, padding: '8px' }} onClick={() => setPage('issues')}>
+            <span className="nav-icon">!'</span>
+            <div><strong>Issues history</strong><small>{issueHistory.length} pushbacks</small></div>
+          </button>
+          <button className={`nav-item ${page === 'logs' ? 'active' : ''}`} style={{ margin: 0, padding: '8px' }} onClick={() => setPage('logs')}>
+            <span className="nav-icon">_</span>
+            <div><strong>Runtime logs</strong><small>{logs.length} events</small></div>
+          </button>
+        </div>
       </aside>
 
       <section className="stage">
         {page === 'screen' && <ScreenPage frame={frame} observer={observer} busy={busy} onAnalyze={() => observerCommand('analyze')} />}
+        {page === 'system' && <SystemPage system={system} frame={frame} busy={busy} onRefresh={refreshCurrent} onSynthesize={() => askGemini(`System map:\n${JSON.stringify(system)}`, 'Synthesize the current computer world model into concrete agent responsibilities and missing context.')} />}
+        {page === 'rigor' && <RigorPage rigor={rigor} localModel={localModel} busy={busy} onRefresh={refreshCurrent} onTestLocal={testLocalModel} />}
+        {page === 'memory' && <MemoryPage memory={memory} busy={busy} query={recallQuery} matches={recallMatches} onQuery={setRecallQuery} onRecall={recallNow} onSeed={seedSystemMemory} onRefresh={refreshCurrent} />}
+        {page === 'slides' && <AgentPage title="Living Slides" subtitle="Deck coherence" description="PowerPoint and slide files become editable workspace objects with consistency checks." items={slides} busy={busy} analysis={analysis} onRefresh={refreshCurrent} actionLabel="Check slide logic" onAnalyze={(file) => askGemini(`Slide/deck file metadata:\n${JSON.stringify(file)}`, 'You are the slide coherence agent. Identify likely deck purpose, possible inconsistency risks, and a reversible fix workflow from metadata only.')} />}
         {page === 'notes' && <AgentPage title="Living Notes" subtitle="Concept linker" description="Recent notes with previews. The agent looks for old concepts that connect to the new one." items={notes} busy={busy} analysis={analysis} onRefresh={refreshCurrent} actionLabel="Find links" onAnalyze={(file) => askGemini(`Note metadata and preview:\n${JSON.stringify(file)}`, 'You are the notes agent. Identify likely concept links, unknown invented terms, and one question to ask the user if meaning is ambiguous.')} />}
         {page === 'gallery' && <AgentPage title="Living Gallery" subtitle="Media memory" description="Recent pictures, screenshots, and videos. Useful for one-of-a-kind deletion warnings and confusing screenshot triage." items={gallery} busy={busy} analysis={analysis} onRefresh={refreshCurrent} actionLabel="Explain asset" onAnalyze={(file) => askGemini(`Media file metadata:\n${JSON.stringify(file)}`, 'You are the gallery agent. Infer likely purpose from filename, folder, and timestamp only. Flag whether deletion should be cautious.')} />}
         {page === 'files' && <AgentPage title="Living Files" subtitle="Workspace references" description="Files become objects with dependency, memory, and downstream context." items={dependencies.length ? dependencies : files} busy={busy} analysis={analysis} onRefresh={refreshCurrent} actionLabel="Assess risk" onAnalyze={(file) => askGemini(`File candidate:\n${JSON.stringify(file)}`, 'You are the file guardian. Explain what could break if this file is deleted, what evidence exists, and offer archive, fork, or remove-reference options.')} />}
@@ -293,38 +410,52 @@ export default function App() {
         {page === 'dependencies' && <DependencyPage items={dependencies} busy={busy} analysis={analysis} onRefresh={refreshCurrent} onAnalyze={(file) => askGemini(`Dependency risk object:\n${JSON.stringify(file)}`, 'You are the dependency graph agent. Describe likely imports, downstream documents, and a safe deletion protocol from the available evidence.')} />}
         {page === 'clipboard' && <ClipboardPage clipboard={clipboard} busy={busy} analysis={analysis} onRead={readClipboardNow} onUnderstand={() => clipboard && askGemini(`Clipboard content:\n${clipboard.text}`, 'Infer immediate user intent and offer paste transformations such as citation, Markdown, BibTeX, LaTeX figure, or plain text. Do not retain secrets.')} />}
         {page === 'notifications' && <NotificationsPage items={notifications} busy={busy} analysis={analysis} onCluster={() => askGemini(`Notifications:\n${notifications.map((item) => `${item.source} | ${item.project} | ${item.text}`).join('\n')}`, 'Cluster these notifications by project, summarize what matters, and suggest one next action.')} />}
+        {page === 'issues' && <IssuesPage items={issueHistory} />}
+        {page === 'logs' && <LogsPage items={logs} />}
       </section>
 
       <aside className="inspector glass">
-        <div className="inspector-heading"><span>Logs</span><small>{intervention?.application || 'No active intervention'}</small></div>
-        {intervention ? (
-          <article className={`intervention ${intervention.severity}`}>
-            <div className="severity">{intervention.severity}</div>
-            <h2>{intervention.title}</h2>
-            {brokenFuture && (
-              <div className="vision-demo">
-                <small>Simulating downstream fracture — {brokenFuture.source}</small>
-                <img
-                  src={brokenFuture.mimeType === 'image/svg+xml'
-                    ? `data:image/svg+xml;base64,${brokenFuture.imageBase64}`
-                    : `data:${brokenFuture.mimeType};base64,${brokenFuture.imageBase64}`}
-                  alt="Broken future dependency graph"
-                />
+        <div className="inspector-heading"><span>Pushback</span><small>{interventions.length} active issue(s)</small></div>
+
+        <div style={{ overflowY: 'auto', flex: 1, paddingRight: '4px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {interventions.length > 0 ? interventions.map(issue => (
+            <article key={issue.id} className={`intervention ${issue.severity}`}>
+              <div className="severity">{issue.severity}</div>
+              <h2>{issue.title}</h2>
+              {issue.brokenFuture?.imageBase64 && (
+                <div className="vision-demo">
+
+                  <img
+                    style={{ cursor: 'zoom-in' }}
+                    src={issue.brokenFuture.mimeType === 'image/svg+xml'
+                      ? `data:image/svg+xml;base64,${issue.brokenFuture.imageBase64}`
+                      : `data:${issue.brokenFuture.mimeType};base64,${issue.brokenFuture.imageBase64}`}
+                    alt="Broken future state"
+                    onClick={() => setLightboxSrc(issue.brokenFuture.mimeType === 'image/svg+xml'
+                      ? `data:image/svg+xml;base64,${issue.brokenFuture.imageBase64}`
+                      : `data:${issue.brokenFuture.mimeType};base64,${issue.brokenFuture.imageBase64}`)}
+                  />
+                </div>
+              )}
+              {issue.videoPreview?.videoBase64 && (
+                <div className="vision-demo">
+                  <small>🎬 Video preview</small>
+                  <video autoPlay loop muted playsInline style={{ width: '100%' }}>
+                    <source src={`data:video/mp4;base64,${issue.videoPreview.videoBase64}`} type="video/mp4" />
+                  </video>
+                </div>
+              )}
+              <p>{issue.reason}</p>
+              {issue.evidence?.length ? <div className="evidence"><strong>Grounded evidence</strong>{issue.evidence.map(item => <span key={item}>{item}</span>)}</div> : null}
+              <div className="decision-actions">
+                <button className="primary-action" onClick={() => setPage('screen')}>🔍 Investigate</button>
+                <button onClick={() => setInterventions(prev => prev.filter(i => i.id !== issue.id))}>Dismiss</button>
               </div>
-            )}
-            <p>{intervention.reason}</p>
-            {intervention.evidence?.length ? <div className="evidence"><strong>Grounded evidence</strong>{intervention.evidence.map((item) => <span key={item}>{item}</span>)}</div> : null}
-            <div className="decision-actions">
-              <button className="primary-action" onClick={() => setPage('screen')}>Investigate</button>
-              {intervention.spoken && <button onClick={() => speakIntervention(intervention.spoken!)}>Speak</button>}
-              <button onClick={() => { setIntervention(null); setBrokenFuture(null); }}>Dismiss</button>
-            </div>
-          </article>
-        ) : (
-          <div className="quiet-state"><span>OK</span><strong>Nothing needs your attention</strong><p>The companion stays quiet until it has grounded evidence from screen or workspace agents.</p></div>
-        )}
-        <div className="activity-heading"><strong>Runtime log</strong><small>{logs.length} events</small></div>
-        <div className="event-list">{logs.length ? logs.map((item) => <div className={`event ${item.tone}`} key={item.id}><time>{item.time}</time><p>{item.label}</p></div>) : <div className="event"><time>Now</time><p>Persistent computer is connected.</p></div>}</div>
+            </article>
+          )) : (
+            <div className="quiet-state"><span>OK</span><strong>Nothing needs your attention</strong><p>The companion stays quiet until it has grounded evidence from screen or workspace agents.</p></div>
+          )}
+        </div>
       </aside>
     </section>
   </main>;
@@ -364,4 +495,12 @@ function ClipboardPage({ clipboard, busy, analysis, onRead, onUnderstand }: { cl
 function NotificationsPage({ items, busy, analysis, onCluster }: { items: Notification[]; busy: boolean; analysis: string; onCluster: () => void }) {
   const groups = items.reduce<Record<string, Notification[]>>((result, item) => { (result[item.project] ||= []).push(item); return result; }, {});
   return <div className="surface data-surface"><div className="surface-heading"><div><span>Living Notifications</span><h2>Context, not interruption</h2><p>Local inbox items grouped by project instead of application.</p></div><button className="primary" onClick={onCluster} disabled={busy || !items.length}>Ask Gemini to merge</button></div><div className="notification-groups">{Object.entries(groups).map(([project, entries]) => <section className="notification-group" key={project}><header><strong>{project}</strong><span>{entries.length} related</span></header>{entries.map((item) => <div className="notification-row" key={item.id}><span>{item.source}</span><p>{item.text}</p><time>{time(item.createdAt)}</time></div>)}</section>)}</div>{analysis && <div className="ai-result"><span>Merged briefing</span><p>{analysis}</p></div>}</div>;
+}
+
+function IssuesPage({ items }: { items: Intervention[] }) {
+  return <div className="surface data-surface"><div className="surface-heading"><div><span>Intervention History</span><h2>Pushbacks & Issues</h2><p>Past interruptions caused by visual breakdowns.</p></div></div><div className="file-list">{items.length === 0 ? <div className="empty-data"><strong>No issues detected... yet.</strong></div> : items.map(issue => <article className={`file-row risk-${issue.severity === 'critical' ? 'high' : 'low'}`} key={issue.id}><span className="file-kind">{issue.severity.slice(0, 1).toUpperCase()}</span><div style={{ flex: 1 }}><strong>{issue.title}</strong><small>{issue.application} • {issue.severity}</small><p className="row-preview">{issue.reason}</p></div></article>)}</div></div>;
+}
+
+function LogsPage({ items }: { items: LogItem[] }) {
+  return <div className="surface data-surface"><div className="surface-heading"><div><span>Observer Logs</span><h2>Runtime Events</h2><p>Detailed event stream from the persistent computer overlay.</p></div></div><div className="file-list">{items.map(item => <article className={`file-row risk-${item.tone === 'warning' ? 'high' : 'low'}`} key={item.id}><span className="file-kind">{item.tone === 'warning' ? '!' : '·'}</span><div style={{ flex: 1 }}><strong>{item.label}</strong><small>{item.time}</small></div></article>)}</div></div>;
 }

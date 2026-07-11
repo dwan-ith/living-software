@@ -55,7 +55,7 @@ const execFileAsync = promisify(execFile);
 let companionProcess = null;
 let companionPid = null;
 
-/** Real inbox â€” no fake hackathon notifications. */
+/** Real inbox GÇö no fake hackathon notifications. */
 const notificationInbox = [];
 
 const observer = {
@@ -464,15 +464,10 @@ app.post('/api/interactions/ask', async (req, res) => {
 
         const sysInstruction = req.body.systemInstruction || 'You are the reasoning layer for Persistent Computer. Be concise, grounded, and propose only reversible actions.';
 
-        const parts = [{ text: composed }];
-        if (req.body.audioBase64) {
-            parts.push({ inlineData: { data: req.body.audioBase64, mimeType: req.body.audioMimeType || 'audio/webm' } });
-        }
-
         const ai = getGemini();
         const response = await ai.models.generateContent({
             model: GEMINI_MODEL || 'gemini-3.5-flash',
-            contents: [{ role: 'user', parts }],
+            contents: [{ role: 'user', parts: [{ text: composed }] }],
             generationConfig: { temperature: 0.2 },
             systemInstruction: sysInstruction
         });
@@ -514,7 +509,7 @@ app.post('/api/dream/broken-future', async (req, res) => {
         if (hasGemini()) {
             try {
                 const ai = getGemini();
-                // gemini-omni-flash-preview: video/multimodal preview â€” uses Interactions API
+                // gemini-omni-flash-preview: video/multimodal preview GÇö uses Interactions API
                 const prompt = `Create a dark dependency graph diagram showing a broken file relationship. Title: "${title}". Context: ${reason}. Style: dark UI, red error nodes, amber warning lines, minimal labels.`;
                 const interaction = await ai.interactions.create({
                     model: GEMINI_OMNI_MODEL || 'gemini-omni-flash-preview',
@@ -560,7 +555,7 @@ app.post('/api/dream/broken-future', async (req, res) => {
             }
         }
 
-        // SVG fallback â€” always works
+        // SVG fallback GÇö always works
         const { renderImage } = await import('./mockNB2.js');
         res.json({
             success: true,

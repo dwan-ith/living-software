@@ -8,10 +8,11 @@ const execFileAsync = promisify(execFile);
 const CAPTURE_SCRIPT = [
     'Add-Type -AssemblyName System.Windows.Forms',
     'Add-Type -AssemblyName System.Drawing',
-    '$bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen',
+    '$screen = [System.Windows.Forms.Screen]::PrimaryScreen',
+    '$bounds = $screen.Bounds',
     '$bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height',
     '$graphics = [System.Drawing.Graphics]::FromImage($bitmap)',
-    '$graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bounds.Size)',
+    '$graphics.CopyFromScreen($bounds.X, $bounds.Y, 0, 0, $bounds.Size)',
     '$stream = New-Object System.IO.MemoryStream',
     '$bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Jpeg)',
     '$graphics.Dispose()',
@@ -38,7 +39,7 @@ export async function captureDesktop() {
 
     const { stdout } = await execFileAsync(POWERSHELL_EXE, [
         '-NoProfile',
-        '-NonInteractive',
+        '-Sta',
         '-ExecutionPolicy', 'Bypass',
         '-Command', CAPTURE_SCRIPT
     ], { maxBuffer: 32 * 1024 * 1024, windowsHide: true });
@@ -108,7 +109,7 @@ Intervene only for a visible inconsistency, destructive action, error, broken wo
         const ai = getGemini();
         // Use models.generateContent — the correct API for multimodal vision
         const response = await ai.models.generateContent({
-            model: model || 'gemini-2.5-flash',
+            model: model || 'gemini-3.5-flash',
             contents: [
                 {
                     role: 'user',
@@ -118,7 +119,7 @@ Intervene only for a visible inconsistency, destructive action, error, broken wo
                     ]
                 }
             ],
-            generationConfig: { temperature: 0.15 }
+            config: { temperature: 0.15 }
         });
 
         const outputText = response.text
