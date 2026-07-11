@@ -9,10 +9,13 @@ import { promisify } from 'node:util';
 import { access } from 'node:fs/promises';
 import {
     BACKEND_DIR,
+    DATA_DIR,
     extractJsonObject,
     GEMINI_AGENT,
     GEMINI_IMAGE_MODEL,
+    GEMINI_IMAGE_LITE_MODEL,
     GEMINI_MODEL,
+    GEMINI_OMNI_MODEL,
     getGemini,
     hasGemini,
     OBSERVER_ANALYSIS_COOLDOWN_MS,
@@ -21,10 +24,12 @@ import {
     OLLAMA_HOST,
     OLLAMA_MODEL,
     ollama,
-    POWERSHELL_EXE,
+    pathExists,
     PORT,
+    POWERSHELL_EXE,
     PROJECT_ROOT_DIR
 } from './config.js';
+
 import { renderImage } from './mockNB2.js';
 import { analyzeDesktop, captureDesktop, detectLocalModel } from './screenObserver.js';
 import {
@@ -136,7 +141,7 @@ async function observerTick(forceAnalysis = false) {
                     importance: analysis.severity === 'critical' ? 0.9 : 0.7
                 });
                 broadcast('memory', { item: episode });
-            } catch {}
+            } catch { }
         }
     } catch (error) {
         broadcast('observer_error', { message: error.message });
@@ -204,7 +209,7 @@ async function findOllamaBinaries() {
         try {
             await access(candidate);
             found.push(candidate);
-        } catch {}
+        } catch { }
     }
     return found;
 }
@@ -457,25 +462,112 @@ app.post('/api/interactions/ask', async (req, res) => {
             ? `${input}\n\nRelevant Living Memory:\n${memoryMatches.map((item) => `- [${item.kind}] ${item.title}: ${item.text || item.summary}`).join('\n')}`
             : String(input);
 
+        const sysInstruction = req.body.systemInstruction || 'You are the reasoning layer for Persistent Computer. Be concise, grounded, and propose only reversible actions.';
+
         const ai = getGemini();
-        const interaction = await ai.interactions.create({
-            model: GEMINI_MODEL,
-            input: composed,
-            system_instruction: req.body.systemInstruction || 'You are the reasoning layer for Living Software. Be concise, grounded, and propose only reversible actions.',
-            previous_interaction_id: req.body.previousInteractionId,
-            store: true
+        const response = await ai.models.generateContent({
+            model: GEMINI_MODEL || 'gemini-3.5-flash',
+            contents: [{ role: 'user', parts: [{ text: composed }] }],
+            generationConfig: { temperature: 0.2 },
+            systemInstruction: sysInstruction
         });
 
+        const outputText = response.text
+            || response.candidates?.[0]?.content?.parts?.[0]?.text
+            || '';
+
         res.json({
-            id: interaction.id,
-            output: interaction.output_text || '',
-            steps: interaction.steps || [],
+            id: `interaction-${Date.now()}`,
+            output: outputText,
+            steps: [],
             memory: memoryMatches
         });
     } catch (error) {
         res.status(502).json({ error: error.message });
     }
 });
+
+// Voice TTS: synthesize spoken text using Gemini (or Web Speech API fallback hint)
+app.post('/api/voice/speak', async (req, res) => {
+    try {
+        const text = String(req.body?.text || '').trim();
+        if (!text) return res.status(400).json({ error: 'text is required' });
+        // Gemini TTS would go here via Live API; for now return the cleaned text
+        // so the frontend can invoke Web Speech API with cleaned, trimmed output.
+        res.json({ text, source: 'tts-passthrough' });
+    } catch (error) {
+        res.status(502).json({ error: error.message });
+    }
+});
+
+// Broken Future: generate a Nano Banana dependency fracture image demonstration
+app.post('/api/dream/broken-future', async (req, res) => {
+    try {
+        const title = String(req.body?.title || 'Dependency fracture').slice(0, 120);
+        const reason = String(req.body?.reason || '').slice(0, 300);
+
+        if (hasGemini()) {
+            try {
+                const ai = getGemini();
+                // gemini-omni-flash-preview: video/multimodal preview — uses Interactions API
+                const prompt = `Create a dark dependency graph diagram showing a broken file relationship. Title: "${title}". Context: ${reason}. Style: dark UI, red error nodes, amber warning lines, minimal labels.`;
+                const interaction = await ai.interactions.create({
+                    model: GEMINI_OMNI_MODEL || 'gemini-omni-flash-preview',
+                    input: prompt,
+                    store: false
+                });
+                // Extract any image from the Omni Flash response
+                const imageStep = (interaction.steps || []).find((s) => s.type === 'model_output');
+                const imagePart = (imageStep?.content || []).find((b) => b.type === 'image' && b.data);
+                if (imagePart) {
+                    return res.json({
+                        success: true,
+                        imageBase64: imagePart.data,
+                        mimeType: imagePart.mime_type || 'image/png',
+                        source: 'gemini-omni-flash-preview'
+                    });
+                }
+                // Fall through to Nano Banana image gen if Omni returned no image
+            } catch (omniError) {
+                console.warn('Omni Flash broken-future failed, trying Nano Banana:', omniError.message);
+            }
+
+            try {
+                const ai = getGemini();
+                const imgPrompt = `Abstract dark dependency fracture diagram: "${title}". Red error nodes, amber broken edges, dark background.`;
+                const response = await ai.models.generateContent({
+                    model: GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image',
+                    contents: [{ role: 'user', parts: [{ text: imgPrompt }] }],
+                    generationConfig: { responseModalities: ['TEXT', 'IMAGE'] }
+                });
+                for (const part of response.candidates?.[0]?.content?.parts || []) {
+                    if (part.inlineData?.data) {
+                        return res.json({
+                            success: true,
+                            imageBase64: part.inlineData.data,
+                            mimeType: part.inlineData.mimeType || 'image/png',
+                            source: 'gemini-3.1-flash-image'
+                        });
+                    }
+                }
+            } catch (imgError) {
+                console.warn('Nano Banana image failed, using SVG fallback:', imgError.message);
+            }
+        }
+
+        // SVG fallback — always works
+        const { renderImage } = await import('./mockNB2.js');
+        res.json({
+            success: true,
+            imageBase64: renderImage(`Broken Future: ${title}`),
+            mimeType: 'image/svg+xml',
+            source: 'svg-fallback'
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 
 app.post('/api/interactions/delegate', async (req, res) => {
     try {
@@ -651,14 +743,14 @@ app.post('/api/local-evolve', async (req, res) => {
     if (hasGemini()) {
         try {
             const ai = getGemini();
-            const interaction = await ai.interactions.create({
-                model: GEMINI_MODEL,
-                input: evolvePrompt(organisms, events, preferredAction),
-                system_instruction: 'Return only valid JSON for the ecosystem decision schema. No markdown.',
-                store: false,
-                generation_config: { temperature: 0.3 }
+            const response = await ai.models.generateContent({
+                model: GEMINI_MODEL || 'gemini-2.5-flash',
+                contents: [{ role: 'user', parts: [{ text: evolvePrompt(organisms, events, preferredAction) }] }],
+                generationConfig: { temperature: 0.3 },
+                systemInstruction: 'Return only valid JSON for the ecosystem decision schema. No markdown.'
             });
-            const parsed = extractJsonObject(interaction.output_text);
+            const outputText = response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            const parsed = extractJsonObject(outputText);
             if (parsed) {
                 return res.json({
                     success: true,
@@ -694,41 +786,20 @@ app.post('/api/dream/image', async (req, res) => {
         if (hasGemini()) {
             try {
                 const ai = getGemini();
-                // Nano Banana models use Interactions API, not Imagen generateImages.
-                const interaction = await ai.interactions.create({
-                    model: GEMINI_IMAGE_MODEL,
-                    input: visualPrompt,
-                    response_format: {
-                        type: 'image',
-                        mime_type: 'image/png',
-                        aspect_ratio: '16:9',
-                        image_size: '1K'
-                    },
-                    store: false
+                const visualPrompt = `Abstract visual identity for a living software organism named "${String(prompt).slice(0, 120)}". Dark interface asset, crisp geometry, readable composition, no text overlays.`;
+                const response = await ai.models.generateContent({
+                    model: GEMINI_IMAGE_MODEL || 'gemini-2.0-flash-preview-image-generation',
+                    contents: [{ role: 'user', parts: [{ text: visualPrompt }] }],
+                    generationConfig: { responseModalities: ['TEXT', 'IMAGE'] }
                 });
-
-                const imageData = interaction.output_image?.data;
-                if (imageData) {
-                    return res.json({
-                        success: true,
-                        imageBase64: imageData,
-                        mimeType: interaction.output_image?.mime_type || 'image/png',
-                        source: GEMINI_IMAGE_MODEL
-                    });
-                }
-
-                // Some SDK versions put images only in steps.
-                for (const step of interaction.steps || []) {
-                    if (step.type !== 'model_output') continue;
-                    for (const block of step.content || []) {
-                        if (block.type === 'image' && block.data) {
-                            return res.json({
-                                success: true,
-                                imageBase64: block.data,
-                                mimeType: block.mime_type || 'image/png',
-                                source: GEMINI_IMAGE_MODEL
-                            });
-                        }
+                for (const part of response.candidates?.[0]?.content?.parts || []) {
+                    if (part.inlineData?.data) {
+                        return res.json({
+                            success: true,
+                            imageBase64: part.inlineData.data,
+                            mimeType: part.inlineData.mimeType || 'image/png',
+                            source: GEMINI_IMAGE_MODEL
+                        });
                     }
                 }
             } catch (error) {
@@ -761,23 +832,27 @@ async function handleUserInterrupt(payload) {
         try {
             const memoryMatches = await recallMemory(text, 4);
             const ai = getGemini();
-            const interaction = await ai.interactions.create({
-                model: GEMINI_MODEL,
-                input: memoryMatches.length
-                    ? `User interrupt: ${text}\n\nMemory:\n${memoryMatches.map((m) => `- ${m.title}: ${m.text || m.summary}`).join('\n')}`
-                    : `User interrupt: ${text}`,
-                system_instruction: 'Acknowledge the interrupt in one short sentence, then name a single new living software concept title derived from it. Format: ACK: ... | CONCEPT: ...',
-                store: false,
-                generation_config: { temperature: 0.4 }
+            const response = await ai.models.generateContent({
+                model: GEMINI_MODEL || 'gemini-2.5-flash',
+                contents: [{
+                    role: 'user',
+                    parts: [{
+                        text: memoryMatches.length
+                            ? `User interrupt: ${text}\n\nMemory:\n${memoryMatches.map((m) => `- ${m.title}: ${m.text || m.summary}`).join('\n')}`
+                            : `User interrupt: ${text}`
+                    }]
+                }],
+                generationConfig: { temperature: 0.4 },
+                systemInstruction: 'Acknowledge the interrupt in one short sentence, then name a single new living software concept title derived from it. Format: ACK: ... | CONCEPT: ...'
             });
-            const output = interaction.output_text || '';
+            const output = response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || '';
             const conceptMatch = output.match(/CONCEPT:\s*(.+)$/im);
             const title = (conceptMatch?.[1] || text).trim().slice(0, 80);
             return {
                 type: 'system_response',
                 message: output || `Interrupt acknowledged: ${text}`,
                 newConcept: {
-                id: `live-${randomUUID()}`,
+                    id: `live-${randomUUID()}`,
                     title,
                     type: 'User Directive',
                     health: 100,
@@ -837,7 +912,7 @@ wss.on('connection', (ws) => {
         }
     });
 
-    ws.on('close', () => {});
+    ws.on('close', () => { });
 });
 
 server.listen(PORT, () => {

@@ -59,7 +59,7 @@ export async function detectLocalModel() {
     const connected = hasGemini();
     return {
         connected,
-        provider: 'google-interactions',
+        provider: 'google-genai',
         model: GEMINI_MODEL,
         models: [GEMINI_MODEL],
         visionCapable: connected
@@ -90,8 +90,8 @@ export async function analyzeDesktop(imageBase64, model = GEMINI_MODEL) {
         throw new Error('Gemini API is not configured (missing GEMINI_API_KEY).');
     }
 
-    const prompt = `You are the local perception layer of Living Software. Inspect this Windows desktop screenshot.
-Return only JSON with this schema:
+    const prompt = `You are the local perception layer of Persistent Computer. Inspect this Windows desktop screenshot.
+Return ONLY a JSON object with this exact schema (no markdown fences):
 {
   "shouldIntervene": boolean,
   "severity": "quiet" | "notice" | "warning" | "critical",
@@ -106,23 +106,31 @@ Intervene only for a visible inconsistency, destructive action, error, broken wo
 
     try {
         const ai = getGemini();
-        const response = await ai.interactions.create({
-            model: model || GEMINI_MODEL,
-            input: [
-                { type: 'text', text: prompt },
-                { type: 'image', data: imageBase64, mime_type: 'image/jpeg' }
+        // Use models.generateContent — the correct API for multimodal vision
+        const response = await ai.models.generateContent({
+            model: model || 'gemini-2.5-flash',
+            contents: [
+                {
+                    role: 'user',
+                    parts: [
+                        { text: prompt },
+                        { inlineData: { data: imageBase64, mimeType: 'image/jpeg' } }
+                    ]
+                }
             ],
-            store: false,
-            generation_config: { temperature: 0.15 }
+            generationConfig: { temperature: 0.15 }
         });
 
-        const parsed = extractJsonObject(response.output_text);
+        const outputText = response.text
+            || response.candidates?.[0]?.content?.parts?.[0]?.text
+            || '';
+
+        const parsed = extractJsonObject(outputText);
         if (!parsed) {
-            // Model sometimes returns prose; treat as quiet rather than crashing the observer loop.
             return {
                 ...QUIET_ANALYSIS,
                 title: 'Unparsed model response',
-                reason: String(response.output_text || '').slice(0, 400)
+                reason: outputText.slice(0, 400)
             };
         }
         return normalizeAnalysis(parsed);

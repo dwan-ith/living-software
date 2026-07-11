@@ -34,7 +34,9 @@ export const OBSERVER_ANALYSIS_COOLDOWN_MS = numberFromEnv('OBSERVER_ANALYSIS_CO
 
 export const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || '').trim();
 export const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
-export const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-lite-image';
+export const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image';
+export const GEMINI_IMAGE_LITE_MODEL = process.env.GEMINI_IMAGE_LITE_MODEL || 'gemini-3.1-flash-lite-image';
+export const GEMINI_OMNI_MODEL = process.env.GEMINI_OMNI_MODEL || 'gemini-omni-flash-preview';
 export const GEMINI_AGENT = process.env.GEMINI_AGENT || 'antigravity-preview-05-2026';
 
 export const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://127.0.0.1:11434';

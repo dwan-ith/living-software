@@ -71,6 +71,7 @@ export default function App() {
   const [analysis, setAnalysis] = useState('');
   const [busy, setBusy] = useState(false);
   const [voice, setVoice] = useState(true);
+  const [brokenFuture, setBrokenFuture] = useState<{ imageBase64: string; mimeType: string; source: string } | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const voiceRef = useRef(voice);
 
@@ -107,8 +108,11 @@ export default function App() {
         if (data.type === 'analysis_started') { setBusy(true); log(`${data.model} is examining the screen.`, 'active'); }
         if (data.type === 'analysis') { setBusy(false); if (!data.analysis.shouldIntervene) log('Screen is coherent. No pushback needed.'); }
         if (data.type === 'intervention') {
-          setBusy(false); setIntervention(data.intervention); log(data.intervention.title, 'warning');
+          setBusy(false); setIntervention(data.intervention); setBrokenFuture(null); log(data.intervention.title, 'warning');
           if (voiceRef.current && data.intervention.spoken) { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(data.intervention.spoken)); }
+          // Auto-load Nano Banana broken-future image
+          fetch(apiUrl('/api/dream/broken-future'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: data.intervention.title, reason: data.intervention.reason }) })
+            .then((r) => r.json()).then(setBrokenFuture).catch(() => { });
         }
         if (data.type === 'observer_error') { setBusy(false); log(data.message, 'warning'); }
         if (data.type === 'notification') setNotifications((items) => [data.notification, ...items]);
@@ -178,6 +182,15 @@ export default function App() {
       setAnalysis(error instanceof Error ? error.message : 'Gemini interaction failed.');
       log('Gemini interaction failed.', 'warning');
     } finally { setBusy(false); }
+  }
+
+  function speakIntervention(text: string) {
+    speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.95;
+    utterance.pitch = 0.9;
+    speechSynthesis.speak(utterance);
+    log('Voice: speaking intervention.', 'active');
   }
 
   function refreshCurrent() {
@@ -283,8 +296,33 @@ export default function App() {
       </section>
 
       <aside className="inspector glass">
-        <div className="inspector-heading"><span>Pushback</span><small>{intervention?.application || 'No active intervention'}</small></div>
-        {intervention ? <article className={`intervention ${intervention.severity}`}><div className="severity">{intervention.severity}</div><h2>{intervention.title}</h2><p>{intervention.reason}</p>{intervention.evidence?.length ? <div className="evidence"><strong>Grounded evidence</strong>{intervention.evidence.map((item) => <span key={item}>{item}</span>)}</div> : null}<div className="decision-actions"><button className="primary-action" onClick={() => setPage('screen')}>Investigate</button><button onClick={() => setIntervention(null)}>Dismiss</button></div></article> : <div className="quiet-state"><span>OK</span><strong>Nothing needs your attention</strong><p>The companion stays quiet until it has grounded evidence from screen or workspace agents.</p></div>}
+        <div className="inspector-heading"><span>Logs</span><small>{intervention?.application || 'No active intervention'}</small></div>
+        {intervention ? (
+          <article className={`intervention ${intervention.severity}`}>
+            <div className="severity">{intervention.severity}</div>
+            <h2>{intervention.title}</h2>
+            {brokenFuture && (
+              <div className="vision-demo">
+                <small>Simulating downstream fracture — {brokenFuture.source}</small>
+                <img
+                  src={brokenFuture.mimeType === 'image/svg+xml'
+                    ? `data:image/svg+xml;base64,${brokenFuture.imageBase64}`
+                    : `data:${brokenFuture.mimeType};base64,${brokenFuture.imageBase64}`}
+                  alt="Broken future dependency graph"
+                />
+              </div>
+            )}
+            <p>{intervention.reason}</p>
+            {intervention.evidence?.length ? <div className="evidence"><strong>Grounded evidence</strong>{intervention.evidence.map((item) => <span key={item}>{item}</span>)}</div> : null}
+            <div className="decision-actions">
+              <button className="primary-action" onClick={() => setPage('screen')}>Investigate</button>
+              {intervention.spoken && <button onClick={() => speakIntervention(intervention.spoken!)}>Speak</button>}
+              <button onClick={() => { setIntervention(null); setBrokenFuture(null); }}>Dismiss</button>
+            </div>
+          </article>
+        ) : (
+          <div className="quiet-state"><span>OK</span><strong>Nothing needs your attention</strong><p>The companion stays quiet until it has grounded evidence from screen or workspace agents.</p></div>
+        )}
         <div className="activity-heading"><strong>Runtime log</strong><small>{logs.length} events</small></div>
         <div className="event-list">{logs.length ? logs.map((item) => <div className={`event ${item.tone}`} key={item.id}><time>{item.time}</time><p>{item.label}</p></div>) : <div className="event"><time>Now</time><p>Persistent computer is connected.</p></div>}</div>
       </aside>

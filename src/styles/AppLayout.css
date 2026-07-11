@@ -955,9 +955,34 @@ nav {
     line-height: 1.4
 }
 
+.vision-demo {
+    margin: 10px 0;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 115, 115, 0.25);
+    background: rgba(0, 0, 0, 0.35);
+}
+
+.vision-demo small {
+    display: block;
+    padding: 5px 9px;
+    color: rgba(255, 255, 255, 0.35);
+    font-size: 8px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.vision-demo img {
+    display: block;
+    width: 100%;
+    max-height: 160px;
+    object-fit: contain;
+}
+
 .decision-actions {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(60px, 1fr));
     gap: 7px;
     margin-top: 10px
 }
