@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test tests/livingRuntime.test.js tests/livingBench.test.js tests/surfaceRuntime.test.js tests/workspaceAdapters.test.js tests/securityAndEffects.test.js tests/evidenceIntegrity.test.js tests/memoryRecall.test.js tests/integrationApi.test.js"
   },
   "keywords": [],
   "author": "",

@@ -1,10 +1,21 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { DATA_DIR } from './config.js';
 
 const memoryDir = DATA_DIR;
 const memoryPath = path.join(memoryDir, 'memory.json');
+
+// Memory writes are read-modify-write cycles on one JSON file. Without
+// serialization, two concurrent writes (e.g. an episode from the observer and a
+// fact from the user) interleave their reads and one update is silently lost.
+let memoryQueue = Promise.resolve();
+
+function queued(operation) {
+    const run = memoryQueue.then(operation, operation);
+    memoryQueue = run.then(() => undefined, () => undefined);
+    return run;
+}
 
 const seedMemory = {
     facts: [
@@ -68,11 +79,27 @@ function tokenize(value) {
         .filter((token) => token.length > 2);
 }
 
-function scoreMemory(item, queryTokens) {
+const RECENCY_HALF_LIFE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Deterministic retrieval scoring: exact-token overlap (Jaccard), weighted
+ * with declared importance and exponential recency decay. Substring matches
+ * like "the" ⊂ "theory" no longer count as relevance.
+ */
+function scoreMemory(item, queryTokens, now = Date.now()) {
     const text = [item.title, item.text, item.summary, item.source, ...(item.tags || []), ...(item.surfaces || [])].join(' ');
-    const tokens = tokenize(text);
-    const matches = queryTokens.filter((token) => tokens.some((candidate) => candidate.includes(token) || token.includes(candidate)));
-    return matches.length / Math.max(queryTokens.length, 1);
+    const tokens = new Set(tokenize(text));
+    const overlap = queryTokens.filter((token) => tokens.has(token)).length;
+
+    const importanceWeight = Math.max(0, Math.min(1, Number(item.importance) || 0.6));
+    const ageMs = Math.max(0, now - Date.parse(item.createdAt || '') || 0);
+    const recencyWeight = Math.pow(0.5, ageMs / RECENCY_HALF_LIFE_MS);
+
+    if (!queryTokens.length) return importanceWeight * 0.5 + recencyWeight * 0.5;
+    const union = tokens.size + queryTokens.length - overlap;
+    const jaccard = union > 0 ? overlap / union : 0;
+    if (overlap === 0) return 0;
+    return jaccard * 0.7 + importanceWeight * 0.15 + recencyWeight * 0.15;
 }
 
 async function ensureMemory() {
@@ -92,7 +119,10 @@ async function ensureMemory() {
 
 async function saveMemory(memory) {
     await mkdir(memoryDir, { recursive: true });
-    await writeFile(memoryPath, `${JSON.stringify(memory, null, 2)}\n`, 'utf8');
+    // Atomic write: a crash mid-save must not corrupt the recall layer.
+    const temporary = `${memoryPath}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(memory, null, 2)}\n`, 'utf8');
+    await rename(temporary, memoryPath);
     return memory;
 }
 
@@ -109,41 +139,47 @@ export async function readMemory() {
     };
 }
 
-export async function rememberFact({ title, text, tags = [], source = 'user', confidence = 0.75 }) {
-    if (!title || !text) throw new Error('title and text are required');
-    const memory = await ensureMemory();
-    const now = new Date().toISOString();
-    const id = `fact-${randomUUID()}`;
-    const fact = {
-        id,
-        title: String(title),
-        text: String(text),
-        tags: Array.isArray(tags) ? tags.map(String) : [],
-        confidence: Number(confidence) || 0.75,
-        source: String(source),
-        createdAt: now,
-        updatedAt: now
-    };
-    memory.facts.unshift(fact);
-    await saveMemory(memory);
-    return fact;
+export function rememberFact(input = {}) {
+    return queued(async () => {
+        const { title, text, tags = [], source = 'user', confidence = 0.75 } = input;
+        if (!title || !text) throw new Error('title and text are required');
+        const memory = await ensureMemory();
+        const now = new Date().toISOString();
+        const id = `fact-${randomUUID()}`;
+        const fact = {
+            id,
+            title: String(title),
+            text: String(text),
+            tags: Array.isArray(tags) ? tags.map(String) : [],
+            confidence: Number(confidence) || 0.75,
+            source: String(source),
+            createdAt: now,
+            updatedAt: now
+        };
+        memory.facts.unshift(fact);
+        await saveMemory(memory);
+        return fact;
+    });
 }
 
-export async function rememberEpisode({ title, summary, surfaces = [], source = 'runtime', importance = 0.6 }) {
-    if (!title || !summary) throw new Error('title and summary are required');
-    const memory = await ensureMemory();
-    const episode = {
-        id: `episode-${randomUUID()}`,
-        title: String(title),
-        summary: String(summary),
-        surfaces: Array.isArray(surfaces) ? surfaces.map(String) : [],
-        source: String(source),
-        importance: Number(importance) || 0.6,
-        createdAt: new Date().toISOString()
-    };
-    memory.episodes.unshift(episode);
-    await saveMemory(memory);
-    return episode;
+export function rememberEpisode(input = {}) {
+    return queued(async () => {
+        const { title, summary, surfaces = [], source = 'runtime', importance = 0.6 } = input;
+        if (!title || !summary) throw new Error('title and summary are required');
+        const memory = await ensureMemory();
+        const episode = {
+            id: `episode-${randomUUID()}`,
+            title: String(title),
+            summary: String(summary),
+            surfaces: Array.isArray(surfaces) ? surfaces.map(String) : [],
+            source: String(source),
+            importance: Number(importance) || 0.6,
+            createdAt: new Date().toISOString()
+        };
+        memory.episodes.unshift(episode);
+        await saveMemory(memory);
+        return episode;
+    });
 }
 
 export async function recallMemory(query, limit = 8) {
@@ -161,38 +197,40 @@ export async function recallMemory(query, limit = 8) {
         .slice(0, Math.max(1, Number(limit) || 8));
 }
 
-export async function seedMemoryFromSystem(system) {
-    const memory = await ensureMemory();
-    const now = new Date().toISOString();
-    const surfaces = Array.isArray(system?.surfaces) ? system.surfaces : [];
-    const episode = {
-        id: `episode-system-${randomUUID()}`,
-        title: 'System snapshot',
-        summary: `Observed ${surfaces.length} living surfaces: ${surfaces.map((surface) => `${surface.label}=${surface.count}`).join(', ')}.`,
-        surfaces: surfaces.map((surface) => surface.id),
-        source: 'system-map',
-        importance: 0.68,
-        createdAt: now
-    };
-
-    const existingIds = new Set(memory.associations.map((item) => `${item.from}:${item.to}`));
-    const newAssociations = [];
-    for (const surface of surfaces) {
-        if (surface.id === 'screen') continue;
-        const key = `screen:${surface.id}`;
-        if (existingIds.has(key)) continue;
-        newAssociations.push({
-            id: `assoc-${surface.id}-${randomUUID()}`,
-            from: 'screen',
-            to: surface.id,
-            relation: `Screen context can explain when ${String(surface.label || surface.id).toLowerCase()} objects become relevant.`,
-            strength: 0.55,
+export function seedMemoryFromSystem(system) {
+    return queued(async () => {
+        const memory = await ensureMemory();
+        const now = new Date().toISOString();
+        const surfaces = Array.isArray(system?.surfaces) ? system.surfaces : [];
+        const episode = {
+            id: `episode-system-${randomUUID()}`,
+            title: 'System snapshot',
+            summary: `Observed ${surfaces.length} living surfaces: ${surfaces.map((surface) => `${surface.label}=${surface.count}`).join(', ')}.`,
+            surfaces: surfaces.map((surface) => surface.id),
+            source: 'system-map',
+            importance: 0.68,
             createdAt: now
-        });
-    }
+        };
 
-    memory.episodes.unshift(episode);
-    memory.associations.unshift(...newAssociations);
-    await saveMemory(memory);
-    return { episode, associations: newAssociations };
+        const existingIds = new Set(memory.associations.map((item) => `${item.from}:${item.to}`));
+        const newAssociations = [];
+        for (const surface of surfaces) {
+            if (surface.id === 'screen') continue;
+            const key = `screen:${surface.id}`;
+            if (existingIds.has(key)) continue;
+            newAssociations.push({
+                id: `assoc-${surface.id}-${randomUUID()}`,
+                from: 'screen',
+                to: surface.id,
+                relation: `Screen context can explain when ${String(surface.label || surface.id).toLowerCase()} objects become relevant.`,
+                strength: 0.55,
+                createdAt: now
+            });
+        }
+
+        memory.episodes.unshift(episode);
+        memory.associations.unshift(...newAssociations);
+        await saveMemory(memory);
+        return { episode, associations: newAssociations };
+    });
 }

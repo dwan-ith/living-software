@@ -1,11 +1,59 @@
 import { execFile } from 'node:child_process';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { open, readdir, readFile, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+
 import { POWERSHELL_EXE, PROJECT_ROOT_DIR } from './config.js';
 
 const execFileAsync = promisify(execFile);
+
+/** Safely read the first maxBytes of a text file. Returns empty string on failure. */
+export async function readFileContent(filePath, maxBytes = 8192) {
+    let handle;
+    try {
+        const ext = path.extname(filePath).toLowerCase();
+        // Skip binary formats
+        if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4', '.mov', '.zip', '.7z', '.rar', '.tar', '.gz', '.exe', '.dll', '.pptx', '.docx', '.xlsx', '.pdf'].includes(ext)) return '';
+        const boundedBytes = Math.max(1, Math.min(Number(maxBytes) || 8192, 256 * 1024));
+        handle = await open(filePath, 'r');
+        const buffer = Buffer.allocUnsafe(boundedBytes);
+        const { bytesRead } = await handle.read(buffer, 0, boundedBytes, 0);
+        const slice = buffer.subarray(0, bytesRead);
+        // Unknown binary formats would otherwise enter prompts as mojibake:
+        // a NUL byte in the prefix is a reliable binary signature.
+        if (slice.includes(0)) return '';
+        return slice.toString('utf8');
+    } catch {
+        return '';
+    } finally {
+        await handle?.close().catch(() => undefined);
+    }
+}
+
+/** Extract text content from a PPTX file by reading slide XML entries. */
+async function extractPptxText(filePath, maxBytes = 8192) {
+    try {
+        // PPTX is a ZIP file. Use PowerShell to extract slide text.
+    const { stdout } = await execFileAsync(POWERSHELL_EXE, [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `Add-Type -AssemblyName System.IO.Compression.FileSystem; ` +
+        `$zip = [System.IO.Compression.ZipFile]::OpenRead('${filePath.replace(/'/g, "''")}'); ` +
+        `$slides = $zip.Entries | Where-Object { $_.FullName -match 'ppt/slides/slide\\d+\\.xml' } | Sort-Object FullName; ` +
+        `foreach ($s in $slides) { ` +
+        `  $reader = New-Object System.IO.StreamReader($s.Open()); ` +
+        `  $xml = $reader.ReadToEnd(); $reader.Close(); ` +
+        `  $slideTextMatches = [regex]::Matches($xml, '<a:t>([^<]+)</a:t>'); ` +
+        `  foreach ($m in $slideTextMatches) { Write-Output $m.Groups[1].Value } ` +
+        `  Write-Output '---' ` +
+        `} ` +
+        `$zip.Dispose()`
+    ], { windowsHide: true, timeout: 10000, maxBuffer: 512 * 1024 });
+        return stdout.trim().slice(0, maxBytes);
+    } catch {
+        return '';
+    }
+}
 
 const SKIP_DIRS = new Set([
     'node_modules', 'dist', '.git', 'data', 'AppData', '$RECYCLE.BIN',
@@ -34,12 +82,15 @@ export async function recentDownloads(limit = 24) {
         try {
             const metadata = await stat(path.join(directory, name));
             if (!metadata.isFile()) return null;
+            const filePath = path.join(directory, name);
+            const content = await readFileContent(filePath);
             return {
                 name,
-                path: path.join(directory, name),
+                path: filePath,
                 type: classifyFile(name),
                 size: metadata.size,
-                modifiedAt: metadata.mtime.toISOString()
+                modifiedAt: metadata.mtime.toISOString(),
+                content: content || undefined
             };
         } catch {
             return null;
@@ -70,14 +121,16 @@ async function recentFilesFrom(directory, extensions, limit = 16) {
                     return;
                 }
                 if (!extensions.includes(path.extname(name).toLowerCase())) return;
+                const content = await readFileContent(target);
                 records.push({
                     name,
                     path: target,
                     type: classifyFile(name),
                     size: metadata.size,
-                    modifiedAt: metadata.mtime.toISOString()
+                    modifiedAt: metadata.mtime.toISOString(),
+                    content: content || undefined
                 });
-            } catch {}
+            } catch { }
         }));
     }
 
@@ -88,7 +141,15 @@ async function recentFilesFrom(directory, extensions, limit = 16) {
 export async function recentSlides() {
     const roots = [path.join(os.homedir(), 'Documents'), path.join(os.homedir(), 'Downloads'), path.join(os.homedir(), 'Desktop')];
     const lists = await Promise.all(roots.map((root) => recentFilesFrom(root, ['.pptx', '.ppt'], 10)));
-    return lists.flat().sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt)).slice(0, 18);
+    const slides = lists.flat().sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt)).slice(0, 18);
+    // Extract text content from PPTX files
+    return Promise.all(slides.map(async (slide) => {
+        if (slide.name.endsWith('.pptx')) {
+            const text = await extractPptxText(slide.path);
+            return { ...slide, content: text || undefined, preview: text ? text.replace(/---/g, ' | ').replace(/\s+/g, ' ').slice(0, 220) : undefined };
+        }
+        return slide;
+    }));
 }
 
 export async function recentNotes() {
@@ -98,7 +159,7 @@ export async function recentNotes() {
     return Promise.all(notes.map(async (note) => {
         try {
             const text = await readFile(note.path, 'utf8');
-            return { ...note, preview: text.replace(/\s+/g, ' ').slice(0, 220) };
+            return { ...note, preview: text.replace(/\s+/g, ' ').slice(0, 220), content: text.slice(0, 8192) };
         } catch {
             return { ...note, preview: 'Preview unavailable.' };
         }
@@ -146,13 +207,12 @@ export async function dependencySnapshot(root = PROJECT_ROOT_DIR) {
     const importIndex = new Map(); // basenames referenced by other files
     await Promise.all(sourceCandidates.slice(0, 60).map(async (file) => {
         try {
-            const text = await readFile(file.path, 'utf8');
-            const sample = text.slice(0, 80_000);
+            const sample = await readFileContent(file.path, 80_000);
             for (const hint of extractImportHints(sample)) {
                 if (!importIndex.has(hint)) importIndex.set(hint, []);
                 importIndex.get(hint).push(file.name);
             }
-        } catch {}
+        } catch { }
     }));
 
     const risky = sourceCandidates.slice(0, 40).map((file) => {
@@ -216,6 +276,7 @@ export async function systemMap(options = {}) {
 
     return {
         generatedAt: new Date().toISOString(),
+        dependencies,
         surfaces: [
             { id: 'screen', label: 'Screen', authority: 'continuous screenshot perception', count: 1, status: 'live' },
             { id: 'files', label: 'Files', authority: 'metadata scan of Downloads and workspace', count: downloads.length + dependencies.scanned, status: 'read-only' },

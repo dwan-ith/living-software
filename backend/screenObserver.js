@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
-import { extractJsonObject, GEMINI_MODEL, getGemini, hasGemini, POWERSHELL_EXE } from './config.js';
+import { extractJsonObject, GEMINI_API_KEY, GEMINI_MODEL, getGemini, hasGemini, MODEL_INFERENCE_ENABLED, OBSERVER_PREFER_LOCAL_VISION, POWERSHELL_EXE } from './config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -27,12 +27,38 @@ const QUIET_ANALYSIS = {
     shouldIntervene: false,
     severity: 'quiet',
     application: 'unknown',
-    title: 'No intervention needed',
-    reason: 'No grounded inconsistency was detected on screen.',
+    title: 'Desktop state observed',
+    reason: 'No grounded reason to interrupt the user.',
+    stateSummary: 'The visible desktop was observed without a high-confidence intervention.',
+    activity: 'unknown',
+    signals: [],
     evidence: [],
     actions: [],
     spoken: ''
 };
+
+let geminiVisionProbe = { checkedAt: 0, result: null };
+
+async function probeGeminiVision() {
+    if (geminiVisionProbe.result && Date.now() - geminiVisionProbe.checkedAt < 60000) {
+        return geminiVisionProbe.result;
+    }
+
+    let result;
+    try {
+        const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+            headers: { 'x-goog-api-key': GEMINI_API_KEY },
+            signal: AbortSignal.timeout(4000)
+        });
+        result = response.ok
+            ? { connected: true, error: null }
+            : { connected: false, error: `Gemini vision credentials were rejected (HTTP ${response.status}).` };
+    } catch (error) {
+        result = { connected: false, error: `Gemini vision probe failed: ${String(error.message || error).slice(0, 180)}` };
+    }
+    geminiVisionProbe = { checkedAt: Date.now(), result };
+    return result;
+}
 
 export async function captureDesktop() {
     if (process.platform !== 'win32') {
@@ -44,7 +70,7 @@ export async function captureDesktop() {
         '-Sta',
         '-ExecutionPolicy', 'Bypass',
         '-Command', CAPTURE_SCRIPT
-    ], { maxBuffer: 32 * 1024 * 1024, windowsHide: true });
+    ], { maxBuffer: 32 * 1024 * 1024, windowsHide: true, timeout: 20_000 });
 
     const imageBase64 = stdout.trim();
     if (!imageBase64 || imageBase64.length < 100) {
@@ -59,6 +85,52 @@ export async function captureDesktop() {
 }
 
 export async function detectLocalModel() {
+    if (!MODEL_INFERENCE_ENABLED) {
+        return {
+            connected: false,
+            provider: 'inference-disabled',
+            model: null,
+            models: [],
+            visionCapable: false,
+            error: 'Model inference is disabled by runtime policy.'
+        };
+    }
+
+    // Cloud vision is the safe default when configured. Loading a large local
+    // vision projector can exhaust constrained desktops and starve text work.
+    if (hasGemini() && !OBSERVER_PREFER_LOCAL_VISION) {
+        const probe = await probeGeminiVision();
+        return {
+            connected: probe.connected,
+            provider: 'google-genai',
+            model: GEMINI_MODEL,
+            models: [GEMINI_MODEL],
+            visionCapable: probe.connected,
+            error: probe.error
+        };
+    }
+
+    // Local vision remains an explicit preference or an offline fallback.
+    try {
+        const { ollama, OLLAMA_MODEL } = await import('./config.js');
+        const response = await fetch(`${process.env.OLLAMA_HOST || 'http://127.0.0.1:11434'}/api/tags`, { signal: AbortSignal.timeout(2000) });
+        if (response.ok) {
+            const data = await response.json();
+            const models = (data.models || []).map((m) => m.name);
+            if (models.some(m => m === OLLAMA_MODEL || m.startsWith(OLLAMA_MODEL))) {
+                return {
+                    connected: true,
+                    provider: 'ollama',
+                    model: OLLAMA_MODEL,
+                    models,
+                    visionCapable: true // Gemma 4 is natively multimodal
+                };
+            }
+        }
+    } catch {
+        // Fallback to gemini detection
+    }
+
     const connected = hasGemini();
     return {
         connected,
@@ -82,6 +154,14 @@ function normalizeAnalysis(parsed) {
         application: String(parsed.application || 'unknown').slice(0, 80),
         title: String(parsed.title || 'Screen observation').slice(0, 160),
         reason: String(parsed.reason || '').slice(0, 600),
+        stateSummary: String(parsed.stateSummary || parsed.reason || 'Visible desktop state observed.').slice(0, 800),
+        activity: String(parsed.activity || 'unknown').slice(0, 160),
+        signals: Array.isArray(parsed.signals) ? parsed.signals.slice(0, 6).map((signal) => ({
+            kind: ['progress', 'change', 'intent', 'opportunity', 'risk', 'blockage', 'completion', 'unknown'].includes(signal?.kind) ? signal.kind : 'unknown',
+            summary: String(signal?.summary || '').slice(0, 240),
+            confidence: Math.max(0, Math.min(1, Number(signal?.confidence) || 0)),
+            evidence: Array.isArray(signal?.evidence) ? signal.evidence.map(String).slice(0, 3) : []
+        })).filter((signal) => signal.summary) : [],
         evidence: Array.isArray(parsed.evidence) ? parsed.evidence.map(String).slice(0, 3) : [],
         actions: Array.isArray(parsed.actions) ? parsed.actions.map(String).slice(0, 3) : [],
         spoken: String(parsed.spoken || '').slice(0, 280)
@@ -89,67 +169,78 @@ function normalizeAnalysis(parsed) {
 }
 
 export async function analyzeDesktop(imageBase64, model = GEMINI_MODEL) {
-    if (!hasGemini()) {
-        throw new Error('Gemini API is not configured (missing GEMINI_API_KEY).');
-    }
+    if (!MODEL_INFERENCE_ENABLED) throw new Error('Model inference is disabled by runtime policy.');
+    const prompt = `You are the grounded perception organ of Living Software. Inspect this Windows desktop screenshot and describe the visible state of the user's world. Your job is broader than anomaly detection: identify visible progress, changes, apparent intent, opportunities, blockages, completions, and risks. Never invent hidden files, dependencies, prior actions, or user goals.
 
-    const prompt = `You are the local perception layer of Persistent Computer. Inspect this Windows desktop screenshot carefully.
-Return ONLY a JSON object with this exact schema (no markdown fences):
+Return only one valid JSON object matching this schema:
 {
-  "shouldIntervene": boolean,
-  "severity": "quiet" | "notice" | "warning" | "critical",
-  "application": "short app name",
-  "title": "short factual headline",
-  "reason": "what changed or appears risky, grounded only in visible evidence",
-  "evidence": ["up to 3 visible facts from the screenshot"],
-  "actions": ["up to 3 safe next actions"],
-  "spoken": "one concise sentence to say aloud"
+  "stateSummary": "factual summary of the visible desktop",
+  "activity": "what the user appears to be doing, or unknown",
+  "application": "primary visible app",
+  "signals": [
+    {"kind": "progress|change|intent|opportunity|risk|blockage|completion|unknown", "summary": "grounded signal", "confidence": 0.0, "evidence": ["visible clue"]}
+  ],
+  "shouldIntervene": false,
+  "severity": "quiet|notice|warning|critical",
+  "title": "brief factual headline",
+  "reason": "why interruption is or is not justified",
+  "evidence": ["up to 3 visible facts supporting intervention"],
+  "actions": ["up to 3 safe, reversible next steps"],
+  "spoken": "one short sentence only when intervention is justified"
 }
-
-Trigger shouldIntervene: true for ANY of the following visible conditions:
-- An error dialog, warning dialog, crash, or exception message
-- A destructive action in progress (delete, overwrite, format, uninstall)
-- Broken or stalled UI (frozen spinner, empty list that should have data, disabled buttons that should be active)
-- In a presentation or slide editor (PowerPoint, Google Slides, Keynote, LibreOffice Impress): any slide that contains text that VISIBLY does not fit the rest of the deck — random words, gibberish, placeholder text like "click to add title" or "lorem ipsum", a sentence written in a completely different tone, topic, or language from the other visible slides, or text that is clearly a test input ("asdfghjkl", "test123", "random text here")
-- In any document or code editor: a section that looks out of place, a function that clearly does nothing, or commented-out code that looks like forgotten work
-- A cross-document conflict visible on screen (two open files with contradictory state)
-- A clipboard paste that does not match the target document's context
-
-If a presentation is visible, read the text on the currently active slide carefully and compare it to any other visible slide content, the deck title, or the file name visible in the title bar. Flag it if the text looks inconsistent with the presentation's theme.
-
-Do not invent dependencies not visible on screen. If there is no grounded reason, set shouldIntervene false and severity quiet.`;
+Observe ordinary useful state even when shouldIntervene is false. Intervene only with high-confidence visible evidence: an error/crash/warning, destructive action in progress, blocked or broken application, or a clear request for pushback. A change, opportunity, or inferred intent is normally a quiet signal, not an interruption. If uncertainty is high, say unknown and stay quiet.`;
 
     try {
-        const ai = getGemini();
-        // Use models.generateContent — the correct API for multimodal vision
-        const response = await ai.models.generateContent({
-            model: model || 'gemini-3.5-flash',
-            contents: [
-                {
-                    role: 'user',
-                    parts: [
-                        { text: prompt },
-                        { inlineData: { data: imageBase64, mimeType: 'image/jpeg' } }
-                    ]
-                }
-            ],
-            config: { temperature: 0.15 }
-        });
+        const local = await detectLocalModel();
+        let outputText = '';
 
-        const outputText = response.text
-            || response.candidates?.[0]?.content?.parts?.[0]?.text
-            || '';
+        if (local.provider === 'ollama') {
+            const { ollama, OLLAMA_MODEL, runLocalModelTask, withTimeout, LOCAL_MODEL_TIMEOUT_MS } = await import('./config.js');
+            const response = await runLocalModelTask(() => withTimeout(ollama.chat({
+                model: OLLAMA_MODEL,
+                messages: [{
+                    role: 'user',
+                    content: prompt,
+                    images: [imageBase64]
+                }],
+                format: 'json',
+                options: { temperature: 0.15, num_gpu: 0 }
+            }), LOCAL_MODEL_TIMEOUT_MS, 'ollama-vision'));
+            outputText = response.message?.content || '';
+        } else {
+            if (!hasGemini()) {
+                throw new Error('Gemini API is not configured (missing GEMINI_API_KEY) and local model is unavailable.');
+            }
+            const ai = getGemini();
+            const response = await ai.models.generateContent({
+                model: model || 'gemini-3.5-flash',
+                contents: [
+                    {
+                        role: 'user',
+                        parts: [
+                            { text: prompt },
+                            { inlineData: { data: imageBase64, mimeType: 'image/jpeg' } }
+                        ]
+                    }
+                ],
+                config: { temperature: 0.15 }
+            });
+            outputText = response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        }
 
         const parsed = extractJsonObject(outputText);
         if (!parsed) {
+            console.warn('[ScreenObserver] Unparsed response:', outputText.slice(0, 50));
             return {
                 ...QUIET_ANALYSIS,
                 title: 'Unparsed model response',
                 reason: outputText.slice(0, 400)
             };
         }
+        console.log('[ScreenObserver] Analyzed frame. shouldIntervene:', parsed.shouldIntervene, 'Reason:', parsed.reason?.slice(0, 80));
         return normalizeAnalysis(parsed);
     } catch (error) {
-        throw new Error(`Gemini screen analysis failed: ${error.message}`);
+        console.error(`[ScreenObserver] Error during analysis: ${error.message}`);
+        throw new Error(`Screen analysis failed: ${error.message}`);
     }
 }

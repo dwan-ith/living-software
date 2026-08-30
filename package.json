@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint src vite.config.ts",
+    "test": "npm --prefix backend test",
     "overlay": "electron --no-force-local-app-data electron-overlay.cjs",
     "preview": "vite preview"
   },

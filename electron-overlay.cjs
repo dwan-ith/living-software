@@ -29,8 +29,11 @@ app.on('ready', () => {
         resizable: false,
         focusable: false,       // Prevent the overlay from stealing focus
         webPreferences: {
-            nodeIntegration: true,
-            contextIsolation: false,
+            // The renderer only displays the Vite surface; it must never have
+            // Node access. A compromised web page here would otherwise own the machine.
+            nodeIntegration: false,
+            contextIsolation: true,
+            sandbox: true,
             backgroundThrottling: false
         }
     });

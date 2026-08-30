@@ -1,6 +1,6 @@
 import { access, readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { GEMINI_MODEL, hasGemini } from './config.js';
+import { MODEL_INFERENCE_ENABLED } from './config.js';
 
 async function exists(target) {
     try {
@@ -53,6 +53,10 @@ export async function projectRigor(root) {
 
     const probes = {
         screenObserver: await exists(path.join(backend, 'screenObserver.js')),
+        livingRuntime: await exists(path.join(backend, 'livingRuntime.js')),
+        capabilityKernel: await exists(path.join(backend, 'capabilityKernel.js')),
+        livingRuntimeTests: await exists(path.join(backend, 'tests', 'livingRuntime.test.js')),
+        livingBenchTests: await exists(path.join(backend, 'tests', 'livingBench.test.js')),
         memoryStore: await exists(path.join(backend, 'memoryStore.js')),
         nativeCompanion: await exists(path.join(backend, 'nativeCompanion.ps1')),
         workspaceAdapters: await exists(path.join(backend, 'workspaceAdapters.js')),
@@ -60,43 +64,56 @@ export async function projectRigor(root) {
         styles: await exists(path.join(src, 'styles', 'AppLayout.css')),
         buildScript: Boolean(packageJson.scripts?.build),
         lintScript: Boolean(packageJson.scripts?.lint),
-        ollamaDependency: Boolean(backendPackage.dependencies?.ollama),
-        googleGenAi: Boolean(backendPackage.dependencies?.['@google/genai'])
+        modelDependenciesPresent: Boolean(backendPackage.dependencies?.ollama || backendPackage.dependencies?.['@google/genai'])
     };
 
     const specs = [
+        {
+            id: 'living-runtime',
+            label: 'Living Runtime',
+            mission: 'Maintain identity, a world model, event history, bounded work, verification receipts, feedback, and approval-gated capability growth across process restarts.',
+            evidence: [
+                probes.livingRuntime && 'Persistent schema-versioned Living Runtime',
+                probes.livingRuntime && 'World, work, and evolution loops',
+                probes.capabilityKernel && 'Versioned capability packages with manifest digests',
+                probes.capabilityKernel && 'Constitutional validation, dry-run, fitness, and rollback',
+                probes.livingRuntime && 'Verification receipts and feedback',
+                probes.livingRuntimeTests && 'Automated persistence and evolution tests',
+                probes.livingBenchTests && 'LivingBench governance and rollback scenarios'
+            ].filter(Boolean),
+            gaps: ['Capability packages remain declarative rather than isolated source-code extensions', 'No operating-system process watcher or file-system event stream yet'],
+            next: 'Add a subprocess sandbox and signed package loader before allowing implementation-bearing extensions.'
+        },
         {
             id: 'perception-agent',
             label: 'Perception Agent',
             mission: 'Continuously interpret the visible desktop and decide whether pushback is warranted.',
             evidence: [
-                probes.screenObserver && 'Windows screenshot capture',
-                probes.googleGenAi && `Gemini vision (${GEMINI_MODEL})`,
-                hasGemini() && 'API key present',
+                probes.screenObserver && 'DPI-aware Windows screenshot capture',
+                !MODEL_INFERENCE_ENABLED && 'Explicit no-model perception boundary',
                 'WebSocket screen stream'
             ].filter(Boolean),
             gaps: [
-                ...(hasGemini() ? [] : ['GEMINI_API_KEY missing']),
                 'No OCR/document-level state diff yet',
                 'No app-specific event hooks yet'
             ],
-            next: 'Add structured screen frame memory with app/window/title/object extraction.'
+            next: 'Add deterministic Win32 window metadata and OCR as provenance-tagged world evidence.'
         },
         {
             id: 'memory-agent',
             label: 'Memory Agent',
             mission: 'Persist facts, episodes, and associations so later actions can say "I have seen this before."',
-            evidence: [probes.memoryStore && 'Persistent JSON memory store under backend/data', 'Recall endpoint', 'Gemini memory injection'].filter(Boolean),
+            evidence: [probes.memoryStore && 'Persistent JSON memory store under backend/data', 'Recall endpoint', 'Deterministic grounded-analysis memory context'].filter(Boolean),
             gaps: ['No embeddings/vector index yet', 'No forgetting/importance decay policy yet'],
             next: 'Add embedding-backed recall and promotion rules from screen events.'
         },
         {
-            id: 'local-model-agent',
-            label: 'Local Model Agent',
-            mission: 'Use Ollama for private local reasoning whenever available, with Gemini fallback.',
-            evidence: [probes.ollamaDependency && 'Ollama JS client dependency', 'Local-evolve with Ollama -> Gemini -> deterministic cascade'].filter(Boolean),
-            gaps: ['Ollama service not guaranteed running'],
-            next: 'Run ollama pull for OLLAMA_MODEL and verify /api/local-model/test.'
+            id: 'deterministic-kernel',
+            label: 'Deterministic Capability Kernel',
+            mission: 'Keep the system useful, inspectable, and evolvable without external or local model inference.',
+            evidence: [probes.capabilityKernel && 'Schema-validated package compiler', !MODEL_INFERENCE_ENABLED && 'Model inference disabled by default', probes.modelDependenciesPresent && 'Optional model dependencies remain dormant'].filter(Boolean),
+            gaps: ['Need compiler is policy/rule based rather than semantic', 'No WASM or subprocess extension sandbox yet'],
+            next: 'Add signed extension bundles executed in a resource-limited subprocess after package rehearsal.'
         },
         {
             id: 'artifact-agent',
@@ -118,17 +135,17 @@ export async function projectRigor(root) {
             id: 'safety-agent',
             label: 'Authority & Safety Agent',
             mission: 'Keep destructive actions reversible and require visible approval.',
-            evidence: ['Read-only metadata adapters', 'Clipboard consent gate', 'Pushback inspector'],
-            gaps: ['No quarantine/fork/remove-reference execution layer yet', 'No policy ledger for approvals yet'],
-            next: 'Add an approval ledger and reversible action receipts.'
+            evidence: ['Read-only metadata adapters', 'Clipboard consent gate', probes.capabilityKernel && 'Manifest validation and runtime-state-only rollback', 'Approval-gated activation'].filter(Boolean),
+            gaps: ['No quarantine/fork/remove-reference execution layer yet', 'Approval identities are local-user only'],
+            next: 'Add a durable approval ledger with actor, scope, expiry, and revocation.'
         },
         {
             id: 'evaluation-agent',
             label: 'Evaluation Agent',
             mission: 'Continuously test whether agents are real, grounded, and demo-ready.',
-            evidence: [probes.buildScript && 'Build script', probes.lintScript && 'Lint script', `${sourceCount} implementation files`].filter(Boolean),
-            gaps: ['No automated browser regression suite', 'No benchmark tasks for each agent'],
-            next: 'Add smoke tests for each API and a demo checklist endpoint.'
+            evidence: [probes.buildScript && 'Build script', probes.lintScript && 'Lint script', probes.livingRuntimeTests && 'Node test suite for identity, world, work, evolution, feedback, and persistence', probes.livingBenchTests && 'LivingBench scenarios for governance, unsafe packages, fitness, upgrades, and rollback', `${sourceCount} implementation files`].filter(Boolean),
+            gaps: ['No automated browser regression suite', 'No benchmark for transactional artifact editing yet'],
+            next: 'Add browser regression and transactional-artifact LivingBench scenarios.'
         },
         {
             id: 'companion-agent',

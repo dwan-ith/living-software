@@ -1,191 +1,182 @@
-﻿# Persistent Computer ΓÇö Full Explanation
+# Living Software — System Explanation
 
-## The Core Idea
+## The transition
 
-Every computer today is stateless in practice. You open a file, delete it, rename a folder, paste something ΓÇö and nothing in the environment knows whether that action contradicts what you were doing three minutes ago. The computer does not remember. It does not object. It just executes.
+This repository began as Persistent Computer: a Windows observer that streamed the desktop, used a multimodal model to detect visible problems, and displayed pushback in a React workspace. The current runtime deliberately disables Gemini and Gemma inference; the living architecture must remain real without either provider.
 
-Persistent Computer is built on a different premise: the computer should be watching, building context over time, and intervening only when it has grounded visual evidence that something is wrong.
+That observer remains useful, but observation and inconsistency detection are not a complete definition of living software. The project now treats Persistent Computer as the habitat and sensory body of a broader Living Runtime.
 
-This is not a copilot or an autocomplete. It does not help you write faster. It watches the desktop continuously, reasons about what it sees, and speaks up when it detects a real inconsistency ΓÇö with screen-level evidence to back it up.
+The runtime is designed around a stricter definition:
 
-The design goal is a single spoken sentence delivered at the right moment:
+> Living Software persists as the same computational identity, maintains a model of its changing world, translates context into bounded action, verifies outcomes, learns feedback, and grows new capabilities under human governance.
 
-> You are deleting `train.py` but it is imported in four other notebooks that are currently open.
+Its interface is now included in that definition. The stable application is no longer a list of pages. The stable layer is a protocol, renderer catalog, conversation, world model, and action constitution. A visible surface is a temporary phenotype generated for the present situation.
 
-That sentence requires several things to be true at once: real screen capture, a vision model that can reason about what it sees, a persistent memory of past sessions, file-system awareness, and the restraint to stay quiet unless the evidence is solid. All of these are built here.
+## Three coupled loops
 
----
+### World loop
 
-## System Architecture
+The world loop turns heterogeneous observations into durable state.
 
-The system is divided into a Node.js backend that runs permanently and a React frontend that connects to it over WebSocket.
-
-```
-Windows primary screen
-    -> PowerShell capture (PrimaryScreen.Bounds)
-    -> screenObserver.js (captureDesktop + analyzeDesktop)
-    -> Gemini 3.5 Flash multimodal vision (gemini-3.5-flash)
-    -> observerTick loop (every 3.5 seconds capture, every 15 seconds analysis)
-    -> WebSocket broadcast to all connected React clients
-    -> React workspace receives: frame, analysis, intervention, memory events
-    -> Intervention card rendered in Pushback panel
-    -> Nano Banana grounded image generation (gemini-3.1-flash-image)
+```text
+screen / files / notes / slides / dependencies / notifications
+    -> normalized event
+    -> entity and relation update
+    -> world revision
+    -> durable persistence
 ```
 
-The frontend never scrapes the screen. All perception happens in Node.
+The observer captures screen pixels locally but does not assign semantic meaning while model inference is disabled. Deterministic workspace adapters, dependency scans, explicit user events, notifications, and consent-gated clipboard reads still produce provenance-tagged world evidence. Pixel capture and semantic interpretation remain separate authorities.
 
----
+Workspace adapters expose bounded content when it is actually readable. Binary-only artifacts preserve an explicit metadata-only uncertainty boundary.
 
-## The Observer Loop
+### Work loop
 
-The heart of the system is a continuous tick function that runs every second. It enforces two separate timers:
+The work loop uses installed capability packages rather than treating generated prose as action.
 
-- Capture interval: every 3.5 seconds by default (configurable via `OBSERVER_INTERVAL_MS`)
-- Analysis cooldown: every 15 seconds by default (configurable via `OBSERVER_ANALYSIS_COOLDOWN_MS`)
-
-Every tick, the observer calls `captureDesktop()`, which runs a PowerShell one-liner that uses `System.Windows.Forms.Screen.PrimaryScreen.Bounds` to grab the exact pixel dimensions of the primary monitor, copies it into an in-memory bitmap, compresses it as JPEG, and returns a base64 string. This is DPI-aware and correctly handles the right edge of the screen, which virtual-screen coordinate methods often cut off.
-
-The base64 JPEG is broadcast over WebSocket as a `screen` event. Every connected React client renders this as its live screen preview ΓÇö essentially a low-latency real-time screencast served locally.
-
-When the analysis cooldown has passed, the observer sends the base64 image along with a structured prompt to Gemini multimodal. The model is instructed to return structured JSON only, in this exact shape:
-
-```json
-{
-  "shouldIntervene": false,
-  "severity": "quiet",
-  "application": "VS Code",
-  "title": "Short factual headline",
-  "reason": "What changed or appears risky, grounded in visible evidence only",
-  "evidence": ["up to 3 visible facts from the screenshot"],
-  "actions": ["up to 3 safe reversible next steps"],
-  "spoken": "One concise sentence to say aloud"
-}
+```text
+recent events + world state + reflection
+    -> select capability
+    -> check package preconditions
+    -> stage and execute trusted primitives
+    -> verify postconditions
+    -> commit an immutable package-linked receipt
+    -> collect user feedback
 ```
 
-The model is explicitly instructed: do not invent hidden dependencies. If there is no grounded reason to intervene, set `shouldIntervene` to false and severity to quiet. This is the core restraint. Most ticks return nothing.
+Current capabilities are conservative. They snapshot continuity, reflect on context, and summarize grounded risk. They write only runtime state, except two explicitly user-started packages that may classify and move a Downloads file or write a proposal artifact. Their receipts include the package digest, version, preconditions, outputs, postconditions, transaction boundary, evidence, compensation records, and rollback statement; recorded compensations are executable through the receipt-revert action rather than aspirational. The work loop may also rest: when no installed capability matches events newer than its last run and continuity is fresh, the cycle records rest instead of a redundant receipt. Reliability and user feedback become a measurable fitness score rather than an implicit impression.
 
-When `shouldIntervene` is true, the backend broadcasts an `intervention` event over WebSocket, which the React frontend catches and adds to the active Pushback panel. The backend simultaneously writes the intervention to the persistent memory store as an episode, so future conversations can recall that this screen event happened.
+There is deliberately no code-execution primitive. An earlier `system.eval` primitive executed model-authored JavaScript inside the server process; it was a constitution level-6 violation (generated source installation), turned prompt injection from screen or file content into remote code execution, and could not declare bounded effects. Forbidden primitives are now rejected at package validation, and the runtime audit carries an explicit no-autopoietic-execution check.
 
----
+### Evolution loop
 
-## Nano Banana Image Generation
+The evolution loop gives the system a bounded form of growth.
 
-When an intervention fires, the backend immediately makes two parallel fetch calls:
+```text
+repeated pattern or expressed unmet need
+    -> capability synthesis
+    -> versioned manifest + canonical digest
+    -> constitutional validation
+    -> side-effect-free dry-run
+    -> explicit activation or recorded rejection
+    -> receipts + fitness
+    -> upgrade, rollback, or retirement review
+```
 
-**Broken Future** (`POST /api/dream/broken-future`)
-This hits the Nano Banana 2 image model (`gemini-3.1-flash-image`) with the current desktop screenshot attached as inline image data, and asks it to generate a visual of what the screen will look like if this error goes unaddressed. The image is injected directly into the intervention card and can be clicked to open full-screen in a lightbox modal.
+The deterministic need compiler selects a small composition of registered primitives from explicit words and evidence classes. It cannot emit shell commands, arbitrary source code, or unregistered effects. It may compose a bounded inference, proposal-artifact, or Downloads-move primitive only when the need explicitly calls for it; those effects must be declared, the package is forced out of automatic mode, rehearsal cannot commit them, and execution must record a compensation. A proposal cannot become active directly: its digest, identity, version sequence, permissions, conditions, tests, rollback scope, and primitive set must validate, then every step must pass rehearsal. Upgrades preserve the prior package and rollback either restores that version or deactivates a version-one evolved capability.
 
-**Video Preview** (`POST /api/dream/video-preview`)
-This calls Gemini Omni Flash (`gemini-omni-flash-preview`), which operates through the Interactions API rather than the standard content API. If the API returns video binary data, it is embedded as an autoplay MP4. This requires preview API access. If not available, nothing is shown ΓÇö the system degrades cleanly.
+## Persistent state
 
-These visual outputs serve a specific purpose: making the pushback legible at a glance. Rather than requiring the user to read a paragraph of JSON, they see a screenshot-grounded image of what could go wrong.
+`backend/data/living-runtime.json` contains:
 
----
+- identity and boot history;
+- the runtime constitution;
+- world entities and relations;
+- normalized events;
+- evidence-linked reflections;
+- installed capabilities and package-version history;
+- proposed, validated, rehearsed, installed, invalid, and rejected proposals;
+- action receipts;
+- user feedback;
+- completed living cycles.
 
-## Intervention Deduplication
+The file is runtime data and is intentionally ignored by git. Restarting the process resumes this state and records another boot event.
 
-The frontend maintains two lists: `interventions` (active, displayed in the sidebar) and `issueHistory` (the full session record, accessible from the Issues History page).
+The older `backend/data/memory.json` remains the recall layer for facts, episodes, and associations. Deterministic grounded capabilities can receive relevant memory alongside current Living Runtime context.
 
-When a new intervention arrives over WebSocket, before doing anything, the system checks whether an entry with the same title already exists in `issueHistory`. If it does, the new event is silently dropped. This prevents the observer from flooding the interface with the same alert every 15 seconds just because the user has not dismissed it yet.
+`backend/data/surface-runtime.json` persists interface sessions separately: present focus, bounded conversation turns, current surface revision, and generation history. It does not turn a rendered screen into identity. A restart can regenerate the phenotype from the surviving world and conversation.
 
-An intervention is only dismissed when the user explicitly clicks Dismiss. If they click Investigate, the app navigates to the Screen page to show the live capture.
+## Human authority
 
----
+The runtime constitution separates six levels of behavior:
 
-## Persistent Memory
+1. **Automatic:** observe, read the world model, reflect, write runtime state, and verify.
+2. **Proposed:** compile a declarative package from a qualified pattern or expressed need.
+3. **Validated and rehearsed:** prove authority and behavior without activation.
+4. **Approval-gated:** activate, upgrade, roll back, or retire a capability.
+5. **User-started and effect-declared:** run a bounded artifact-changing or configured-inference capability with explicit effect records and compensation metadata.
+6. **Not authorized:** arbitrary filesystem mutation, undeclared external effects, shell execution, installation of generated source code, or constitutional change.
 
-The memory store is a flat JSON file at `backend/data/memory.json`. It stores three kinds of records:
+This distinction is essential. A system that merely says it repaired something is not living or reliable; it is unverified. A system that can change itself without a boundary is not rigorous; it is unsafe.
 
-- **Facts**: Standing truths about the project or the user's context. For example: `"This project uses gemini-3.5-flash for reasoning."`
-- **Episodes**: Time-stamped events with surfaces (which agent produced them) and importance weights. Screen interventions are stored as episodes automatically.
-- **Associations**: Explicit links between two named concepts with a relationship label.
+## Generative Surface loop
 
-On every `/api/interactions/ask` call, the backend optionally recalls the most relevant memory items for the query and injects them into the Gemini prompt. The model then has access to context it learned in previous sessions.
+The former fixed React dashboard has been removed. `App.tsx` is now a session-aware container with an intent input, connection state, and a registry renderer.
 
-This is not a vector database. It is a simple fuzzy text-match recall that scores items against the current query. Good enough for the prototype. The architecture describes the next step clearly: replace recall with embedding-based semantic search.
+```text
+current utterance + recent conversation
+    + identity / world / memory
+    + capability packages / proposals / receipts
+    + bounded workspace snapshot
+    -> optional schema-constrained model composer
+    -> protocol validation and catalog authorization
+    -> living-surface/v1 document
+    -> trusted React component registry
+    -> typed action with surface revision + component + target
+    -> backend authorization + execution
+    -> new world state and recomposed phenotype
+```
 
----
+If the user asks about downstream risk, the surface contains a dependency graph and relevant capability controls. If the user asks to resume prior work, those components disappear and a memory stream, events, and reflection are composed. Capability proposals appear inline when they are contextually relevant. There is no fixed feature navigation.
 
-## Workspace Agents
+The model does not generate JSX, JavaScript, selectors, endpoints, or arbitrary HTML. It may only select registered component types, server-owned data bindings, and declared actions in structured JSON. The backend rejects unknown components, incompatible bindings, undeclared actions, stale revisions, and targets not present in the bound surface data. This follows the same safety principle as A2UI: generated UI is declarative data; executable rendering remains trusted client code.
 
-The left navigation rail exposes a set of agents, each of which pulls metadata from the local file system:
+When model inference is disabled, the bounded adaptive policy emits the same surface protocol and labels provenance honestly as `adaptive-policy`. With Gemini enabled, structured output is constrained by the surface JSON schema and then independently validated. Model output is a proposed phenotype, not authority.
 
-| Agent | What it reads | Purpose |
-|---|---|---|
-| Screen | Live WebSocket frame | Real-time desktop view with analysis |
-| Notes | Markdown files in common note locations | Surface note content to Gemini for analysis |
-| Gallery | Recent image/video files | Surface media files for context and analysis |
-| Files | Recent downloads and local files | Reference and deletion risk assessment |
-| Downloads | Downloads folder | Why does this file exist? What project does it belong to? |
-| Graph | Import-aware dependency scan | JS, TS, TSX, Python, notebooks, markdown, JSON |
-| Clipboard | System clipboard (read-once consent gate) | Understand clipboard intent before paste |
-| Notifications | In-app notification inbox | Group notifications by project rather than by app |
+## What is real now
 
-Each agent page renders a list of items with an action button. When you click the button (e.g. "Explain context" on a note file), the frontend calls `askGemini` with the file metadata and asks a targeted question. The result is rendered inline on the agent page.
+- DPI-aware Windows desktop capture with presence-aware adaptive cadence
+- model-independent deterministic runtime policy
+- local pixel capture with an explicit no-semantic-inference boundary
+- deterministic content and metadata grounding
+- persistent identity and world state with quarantine-on-corruption (never silent amnesia)
+- phased metabolism: provider inference and effect verification run outside the state queue, so perception is never blocked by a slow model call
+- normalized events from perception, interactions, notifications, and dependency scans
+- continuous scheduled living cycles that rest when nothing is triggered
+- evidence-linked reflections whose evidence leads with the triggering event
+- bounded capability execution behind an execution-time authority gate re-checked at commit
+- verification receipts that are hash-chained for tamper detection, archived instead of deleted, and independently filesystem-verified for artifact effects
+- write-ahead effect journaling: pre-crash artifact intents are compensated on boot
+- collision-safe artifact moves that never overwrite existing files
+- explicit user feedback with honest fitness provenance (feedbackCount)
+- counterfactual coverage analysis driving evolution, with speculative below-threshold proposals formed during idle-dream (labeled `speculative-simulation`, still approval-gated)
+- repeated-pattern and need-driven capability proposals with open-proposal noise caps
+- manifest validation, forbidden-primitive rejection, enforced trigger thresholds/cooldowns, and side-effect-free rehearsal
+- approval-gated activation, version upgrades, and rollback
+- package-linked transaction receipts and capability fitness
+- runtime integrity audit including no-autopoietic-execution, receipt-ledger-integrity, persistence-health, constitution-integrity, and retirement-review checks
+- bounded-time local and cloud model calls so no hung provider can wedge a queue
+- refusal-aware health semantics: refused-authority receipts count as governance working, not work failing
+- durable ledger anchor (`ledger-head.jsonl`) that flags forged or wholesale-deleted receipt history
+- size-bounded rotation for append-only evidence archives
+- compact `living_state` WebSocket digests instead of full-state re-broadcasts
+- per-node renderer isolation on the phenotype (one broken node cannot kill the surface)
+- exact-token memory retrieval with importance/recency weighting
+- loopback-bound HTTP listener with a browser-origin allowlist on HTTP and WebSocket handshakes
+- consent-gated clipboard reads (explicit POST confirmation)
+- idempotent surface actions: replays cannot execute twice
+- real OS-level idle detection for the dream phase
+- LivingBench tests for governance, unsafe packages, network boundary, effect reversion, crash recovery, ledger tampering, concurrency guarantees, speculative evolution, upgrades, rollback, and feedback
+- persistent generative-surface sessions and revisions
+- context-dependent replacement of the complete component composition
+- trusted component registry and binding resolution
+- backend authorization for every generated UI action
+- deduplicated, cached context harvesting shared by the world and phenotype loops
+- explicit effect manifests and non-committing rehearsals for artifact-changing primitives
+- bounded-time model calls so a hung provider cannot freeze the mutation queue
 
----
+## What remains research work
 
-## Voice and Microphone
+- event-driven file and process watchers instead of periodic snapshots
+- durable project/task/decision entities learned from multiple surfaces
+- semantic retrieval beyond weighted token overlap; reflection consolidation
+- independent semantic verification of model output (artifact effects are already filesystem-verified)
+- signed implementation-bearing packages in a resource-limited subprocess sandbox
+- full predictive coding: simulating future habitat states and counterfactual worlds beyond trigger-coverage replay
+- Actor-model distribution across processes for multi-habitat deployments (single-machine phased concurrency is in place)
+- automated retirement policy execution with human review (candidates are surfaced by audit today)
+- authentication for non-browser local callers (the origin allowlist defends browsers and LAN exposure, not same-user processes)
+- automated browser-level regression tests in CI
+- LivingBench scenarios for deterministic perception provenance
 
-The voice system has two directions:
-
-**Speaking (output):**
-When an intervention fires and has a `spoken` field, the system calls `speakWithGeminiTranslation`. If the selected language is English, the text is sent directly to the Google Translate TTS endpoint, which produces natural-sounding audio significantly better than browser `speechSynthesis`. If the selected language is non-English (Hindi, Mandarin, Spanish, Arabic), the text is first sent to Gemini with a translation-only system instruction, and the translated output is then sent to the TTS endpoint in the correct locale. If the TTS endpoint fails (CORS or rate limit), the system falls back to `speechSynthesis` automatically.
-
-**Listening (input):**
-The mic button uses `navigator.mediaDevices.getUserMedia` to request raw microphone access. It records as a `audio/webm` blob using `MediaRecorder`. When you click stop (or the recording ends), the blob is base64-encoded and sent directly to the backend `/api/interactions/ask` endpoint as an `audioBase64` field alongside a text prompt. The backend attaches the audio as `inlineData` to the Gemini content parts. Gemini 3.5 Flash can process audio directly as multimodal input, so it transcribes and responds in one round trip. The text response is then passed through the translation and TTS pipeline.
-
-This is fully Gemini-based. No browser speech recognition API is used at any point.
-
----
-
-## Language Selection
-
-The dropdown in the top bar selects the TTS/translation target language. This setting affects:
-- The locale passed to TTS on voice output
-- The language the text is translated to before playback (if non-English)
-- The `lang` attribute passed to `MediaRecorder`-derived requests (for regional speech tuning)
-
-The language selector does not currently affect the Gemini analysis or intervention language. Interventions are generated in English by the vision model. Only the `spoken` field is routed through translation.
-
----
-
-## Native Desktop Companion
-
-Separate from the browser, the system can launch a small PowerShell-based overlay that draws a coloured arrow near your real system cursor. This is started by clicking the `Desktop cursor` button in the top bar. It spawns `backend/nativeCompanion.ps1` as a detached process using Windows Forms.
-
-The companion is currently a passive overlay. The architecture has a planned next step: bridge the intervention state into the companion so it changes shape and colour when the agent detects something. Right now it exists as a proof that the system can cross the boundary from browser to native Windows UI.
-
----
-
-## Agent Evaluation (Rigor)
-
-The backend has a `projectRigor` function that scores each of the eight internal agents on a scale of 0 to 100. The scoring is based on what physical files exist, whether dependencies are present, and whether the API key is configured. Each agent has an explicit `gaps` list and a `next` field describing what would need to be built to advance from current state.
-
-The current average sits at the "prototype" band, meaning the agent shapes are real but some execution loops are still surface-level.
-
----
-
-## Models in Use
-
-| Model | Purpose |
-|---|---|
-| `gemini-3.5-flash` | Screen analysis, reasoning, clipboard understanding, note analysis, dependency risk, translation, audio processing |
-| `gemini-3.1-flash-image` | Nano Banana grounded image generation (broken future state visuals) |
-| `gemini-3.1-flash-lite-image` | Lighter image generation for high-volume use cases |
-| `gemini-omni-flash-preview` | Video generation via Interactions API (requires preview access) |
-| Ollama + `gemma3n:e4b` | Local private reasoning, offline fallback |
-
-The system always prefers Gemini if the API key is present. Ollama is a fallback for fully local / air-gapped operation.
-
----
-
-## What Makes It Different
-
-Most AI desktop tools are query-based. You open them, type a question, get an answer, close them. This system runs continuously in the background. You do not query it. It queries the screen.
-
-The practical implication is that it can catch things you would never have thought to ask about ΓÇö a broken import right as you are about to delete the file, an error message that appeared while you were reading a different window, a clipboard item that contradicts your current document.
-
-The design principle is: stay silent until the evidence is grounded, then speak exactly once with a single actionable sentence. Do not fill the screen with tooltips. Do not suggest things without citing what was visible. Do not repeat the same intervention.
-
-That restraint is what makes the pushback credible rather than annoying.
+The current system is therefore a minimal but actual Living Runtime with a living interface. It implements persistence, observation, bounded work, verification, feedback, capability growth, and contextual phenotype generation. It does not claim open-ended autonomous self-modification, unconstrained model authority, or general desktop competence.
